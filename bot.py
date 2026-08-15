@@ -13,15 +13,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from dotenv import load_dotenv
-
-
 # ============================================================
 # НАСТРОЙКИ
 # ============================================================
-
-load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 ALLOWED_USERNAME = "emptinessdurka"
