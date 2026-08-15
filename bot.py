@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from urllib.parse import urlparse
 from statistics import mean
 
 import aiohttp
@@ -23,70 +24,77 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Единственный разрешённый Telegram-пользователь
 ALLOWED_USERNAME = "emptinessdurka"
 
 # ------------------------------------------------------------
-# АДРЕС ЛОКАЛЬНОЙ КОПИИ САЙТА
-#
-# Например:
-# http://127.0.0.1:8080/
-# http://localhost:3000/
-#
+# ТОЛЬКО ЛОКАЛЬНЫЙ СЕРВЕР
 # ------------------------------------------------------------
 
 TARGET_URL = "https://safely-meditative-elephant.tilda.ws"
 
+ALLOWED_HOSTS = {
+    "safely-meditative-elephant.tilda.ws",
+}
 
-# Максимальная продолжительность теста
+
+# ============================================================
+# ЛИМИТЫ
+# ============================================================
+
 TEST_DURATION = 60
 
+MAX_CONCURRENT = 2000
 
-# Максимальный размер ответа.
-#
-# 100 * 1024 = 102400 байт = 100 КБ
-#
 MAX_RESPONSE_SIZE = 100 * 1024
 
-
-# Размер одной порции при потоковом чтении
 CHUNK_SIZE = 8192
 
-
-# Максимальное время одного HTTP-запроса
 REQUEST_TIMEOUT = 10
 
 
-# Режимы нагрузки
-#
-# ВАЖНО:
-# Здесь намеренно только 1 / 2 / 3 RPS.
-#
+# ============================================================
+# РЕЖИМЫ
+# ============================================================
+
 MODES = {
     "light": {
         "name": "🟢 Лёгкий",
-        "rps": 10,
+        "concurrency": 10,
     },
 
     "medium": {
         "name": "🟡 Средний",
-        "rps": 200,
+        "concurrency": 100,
     },
 
     "heavy": {
         "name": "🔴 Сложный",
-        "rps": 2000,
+        "concurrency": 500,
+    },
+
+    "extreme": {
+        "name": "💀 2000 Concurrent",
+        "concurrency": 2000,
     },
 }
 
 
 # ============================================================
-# ПРОВЕРКА BOT TOKEN
+# ПРОВЕРКА URL
 # ============================================================
+
+parsed_url = urlparse(TARGET_URL)
+
+if parsed_url.hostname not in ALLOWED_HOSTS:
+    raise RuntimeError(
+        "ОШИБКА: TARGET_URL должен указывать "
+        "только на localhost."
+    )
+
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "BOT_TOKEN не найден.\n"
+        "BOT_TOKEN не найден. "
         "Добавь его в файл .env"
     )
 
@@ -103,7 +111,7 @@ dp = Dispatcher()
 
 
 # ============================================================
-# СОСТОЯНИЕ ТЕСТА
+# СОСТОЯНИЕ
 # ============================================================
 
 test_running = False
@@ -113,6 +121,8 @@ test_task = None
 test_started = 0.0
 
 test_mode = ""
+
+current_concurrency = 0
 
 
 # ============================================================
@@ -135,16 +145,21 @@ response_times = []
 
 http_codes = {}
 
-
-# Событие для остановки теста
-stop_event = asyncio.Event()
+active_requests = 0
 
 
 # ============================================================
-# ПРОВЕРКА ДОСТУПА
+# LOCK ДЛЯ СТАТИСТИКИ
 # ============================================================
 
-def is_allowed_user(user) -> bool:
+stats_lock = asyncio.Lock()
+
+
+# ============================================================
+# ПРОВЕРКА ПОЛЬЗОВАТЕЛЯ
+# ============================================================
+
+def is_allowed_user(user):
 
     if user is None:
         return False
@@ -187,13 +202,15 @@ def main_keyboard():
 
             [
                 InlineKeyboardButton(
+                    text="💀 2000 Concurrent",
+                    callback_data="start:extreme",
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
                     text="📊 Статус",
                     callback_data="status",
-                ),
-
-                InlineKeyboardButton(
-                    text="🛑 Стоп",
-                    callback_data="stop",
                 ),
             ],
         ]
@@ -204,7 +221,7 @@ def main_keyboard():
 # СБРОС СТАТИСТИКИ
 # ============================================================
 
-def reset_statistics():
+async def reset_statistics():
 
     global total_requests
     global successful_requests
@@ -216,27 +233,411 @@ def reset_statistics():
 
     global response_times
     global http_codes
+    global active_requests
 
-    total_requests = 0
-    successful_requests = 0
-    failed_requests = 0
+    async with stats_lock:
 
-    oversized_responses = 0
+        total_requests = 0
+        successful_requests = 0
+        failed_requests = 0
 
-    timeout_errors = 0
+        oversized_responses = 0
+        timeout_errors = 0
+        connection_errors = 0
 
-    connection_errors = 0
+        response_times = []
 
-    response_times = []
+        http_codes = {}
 
-    http_codes = {}
+        active_requests = 0
 
 
 # ============================================================
-# ФОРМАТ СТАТИСТИКИ
+# ЧТЕНИЕ ОТВЕТА НЕ БОЛЕЕ 100 КБ
 # ============================================================
 
-def get_status_text():
+async def read_limited_response(response):
+
+    global oversized_responses
+
+    received = 0
+
+    # --------------------------------------------------------
+    # Проверяем Content-Length
+    # --------------------------------------------------------
+
+    content_length = response.headers.get(
+        "Content-Length"
+    )
+
+    if content_length:
+
+        try:
+            declared_size = int(
+                content_length
+            )
+        except (TypeError, ValueError):
+            declared_size = None
+
+        if (
+            declared_size is not None
+            and declared_size > MAX_RESPONSE_SIZE
+        ):
+
+            async with stats_lock:
+                oversized_responses += 1
+
+            response.close()
+
+            return False
+
+
+    # --------------------------------------------------------
+    # Потоковое чтение
+    # --------------------------------------------------------
+
+    try:
+
+        async for chunk in response.content.iter_chunked(
+            CHUNK_SIZE
+        ):
+
+            received += len(chunk)
+
+            if received > MAX_RESPONSE_SIZE:
+
+                async with stats_lock:
+                    oversized_responses += 1
+
+                response.close()
+
+                return False
+
+        return True
+
+    except Exception:
+
+        response.close()
+
+        raise
+
+
+# ============================================================
+# ОДИН ЗАПРОС
+# ============================================================
+
+async def perform_request(
+    session,
+):
+
+    global total_requests
+    global successful_requests
+    global failed_requests
+
+    global timeout_errors
+    global connection_errors
+
+    global active_requests
+
+    started = time.monotonic()
+
+    async with stats_lock:
+        active_requests += 1
+
+    try:
+
+        async with session.get(
+            TARGET_URL,
+            allow_redirects=True,
+        ) as response:
+
+            code = response.status
+
+            async with stats_lock:
+
+                http_codes[code] = (
+                    http_codes.get(
+                        code,
+                        0
+                    ) + 1
+                )
+
+            response_ok = (
+                await read_limited_response(
+                    response
+                )
+            )
+
+            elapsed = (
+                time.monotonic()
+                - started
+            )
+
+            async with stats_lock:
+
+                total_requests += 1
+
+                response_times.append(
+                    elapsed
+                )
+
+                if (
+                    response_ok
+                    and 200 <= code < 400
+                ):
+
+                    successful_requests += 1
+
+                else:
+
+                    failed_requests += 1
+
+    except asyncio.TimeoutError:
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        async with stats_lock:
+
+            total_requests += 1
+
+            failed_requests += 1
+
+            timeout_errors += 1
+
+            response_times.append(
+                elapsed
+            )
+
+    except aiohttp.ClientConnectionError:
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        async with stats_lock:
+
+            total_requests += 1
+
+            failed_requests += 1
+
+            connection_errors += 1
+
+            response_times.append(
+                elapsed
+            )
+
+    except Exception as error:
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        async with stats_lock:
+
+            total_requests += 1
+
+            failed_requests += 1
+
+            response_times.append(
+                elapsed
+            )
+
+        print(
+            f"Request error: {error}"
+        )
+
+    finally:
+
+        async with stats_lock:
+            active_requests -= 1
+
+
+# ============================================================
+# ГРУППА ЗАПРОСОВ
+# ============================================================
+
+async def worker(
+    session,
+    end_time,
+):
+
+    while (
+        time.monotonic()
+        < end_time
+    ):
+
+        await perform_request(
+            session
+        )
+
+
+# ============================================================
+# ТЕСТ
+# ============================================================
+
+async def run_test(
+    mode_key,
+):
+
+    global test_running
+    global test_started
+    global test_mode
+    global current_concurrency
+
+    mode = MODES[
+        mode_key
+    ]
+
+    current_concurrency = min(
+        mode["concurrency"],
+        MAX_CONCURRENT,
+    )
+
+    test_mode = mode["name"]
+
+    await reset_statistics()
+
+    test_running = True
+
+    test_started = (
+        time.monotonic()
+    )
+
+    end_time = (
+        test_started
+        + TEST_DURATION
+    )
+
+
+    timeout = aiohttp.ClientTimeout(
+        total=REQUEST_TIMEOUT,
+        connect=5,
+        sock_read=REQUEST_TIMEOUT,
+    )
+
+
+    connector = aiohttp.TCPConnector(
+        limit=MAX_CONCURRENT,
+        limit_per_host=MAX_CONCURRENT,
+        ttl_dns_cache=300,
+    )
+
+
+    tasks = []
+
+    try:
+
+        async with aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            headers={
+                "User-Agent":
+                    "Local-Load-Test/1.0"
+            },
+        ) as session:
+
+            # ------------------------------------------------
+            # Создаём заданное количество параллельных workers
+            # ------------------------------------------------
+
+            for _ in range(
+                current_concurrency
+            ):
+
+                task = asyncio.create_task(
+                    worker(
+                        session,
+                        end_time,
+                    )
+                )
+
+                tasks.append(task)
+
+
+            # ------------------------------------------------
+            # Ждём окончания 60 секунд
+            # ------------------------------------------------
+
+            remaining = max(
+                0,
+                end_time
+                - time.monotonic()
+            )
+
+            await asyncio.sleep(
+                remaining
+            )
+
+
+    except Exception as error:
+
+        print(
+            f"Test error: {error}"
+        )
+
+
+    finally:
+
+        # ----------------------------------------------------
+        # После 60 секунд прекращаем workers
+        # ----------------------------------------------------
+
+        for task in tasks:
+            task.cancel()
+
+        await asyncio.gather(
+            *tasks,
+            return_exceptions=True,
+        )
+
+        test_running = False
+
+        current_concurrency = 0
+
+
+# ============================================================
+# СТАТИСТИКА
+# ============================================================
+
+async def get_status_text():
+
+    async with stats_lock:
+
+        total = total_requests
+
+        successful = (
+            successful_requests
+        )
+
+        failed = failed_requests
+
+        oversized = (
+            oversized_responses
+        )
+
+        timeouts = (
+            timeout_errors
+        )
+
+        connection_errors_count = (
+            connection_errors
+        )
+
+        active = active_requests
+
+        times = list(
+            response_times
+        )
+
+        codes = dict(
+            http_codes
+        )
+
 
     if test_started:
 
@@ -252,39 +653,34 @@ def get_status_text():
 
     if elapsed > 0:
 
-        current_rps = (
-            total_requests
-            / elapsed
+        rps = (
+            total / elapsed
         )
 
     else:
 
-        current_rps = 0
+        rps = 0
 
 
-    # --------------------------------------------------------
-    # ВРЕМЯ ОТВЕТА
-    # --------------------------------------------------------
-
-    if response_times:
+    if times:
 
         average = (
-            mean(response_times)
+            mean(times)
             * 1000
         )
 
         minimum = (
-            min(response_times)
+            min(times)
             * 1000
         )
 
         maximum = (
-            max(response_times)
+            max(times)
             * 1000
         )
 
         sorted_times = sorted(
-            response_times
+            times
         )
 
         p95_index = int(
@@ -292,14 +688,10 @@ def get_status_text():
             * 0.95
         )
 
-        if (
-            p95_index
-            >= len(sorted_times)
-        ):
-            p95_index = (
-                len(sorted_times)
-                - 1
-            )
+        p95_index = min(
+            p95_index,
+            len(sorted_times) - 1,
+        )
 
         p95 = (
             sorted_times[p95_index]
@@ -314,36 +706,26 @@ def get_status_text():
         p95 = 0
 
 
-    # --------------------------------------------------------
-    # СОСТОЯНИЕ
-    # --------------------------------------------------------
+    if codes:
 
-    if test_running:
-
-        state = "🟢 Запущен"
-
-    else:
-
-        state = "🔴 Не запущен"
-
-
-    # --------------------------------------------------------
-    # HTTP-КОДЫ
-    # --------------------------------------------------------
-
-    if http_codes:
-
-        codes = ", ".join(
+        codes_text = ", ".join(
             f"{code}: {count}"
             for code, count
             in sorted(
-                http_codes.items()
+                codes.items()
             )
         )
 
     else:
 
-        codes = "—"
+        codes_text = "—"
+
+
+    state = (
+        "🟢 Запущен"
+        if test_running
+        else "🔴 Завершён"
+    )
 
 
     return (
@@ -354,34 +736,37 @@ def get_status_text():
         f"Режим: "
         f"{test_mode or '—'}\n"
 
+        f"Concurrency: "
+        f"<b>{current_concurrency}</b>\n"
+
         f"Время: "
         f"{elapsed:.1f} сек.\n\n"
 
-        f"🎯 URL:\n"
-        f"<code>{TARGET_URL}</code>\n\n"
-
         f"📨 Всего запросов: "
-        f"<b>{total_requests}</b>\n"
+        f"<b>{total}</b>\n"
 
         f"✅ Успешных: "
-        f"<b>{successful_requests}</b>\n"
+        f"<b>{successful}</b>\n"
 
         f"❌ Неуспешных: "
-        f"<b>{failed_requests}</b>\n"
+        f"<b>{failed}</b>\n"
 
-        f"📦 Слишком большие ответы: "
-        f"<b>{oversized_responses}</b>\n"
+        f"📦 >100 КБ: "
+        f"<b>{oversized}</b>\n"
 
-        f"⏰ Таймауты: "
-        f"<b>{timeout_errors}</b>\n"
+        f"⏰ Таймаутов: "
+        f"<b>{timeouts}</b>\n"
 
-        f"🔌 Ошибки соединения: "
-        f"<b>{connection_errors}</b>\n\n"
+        f"🔌 Ошибок соединения: "
+        f"<b>{connection_errors_count}</b>\n\n"
 
-        f"⚡ Фактический RPS: "
-        f"<b>{current_rps:.2f}</b>\n\n"
+        f"⚡ RPS: "
+        f"<b>{rps:.2f}</b>\n"
 
-        f"⏱ Средний ответ: "
+        f"🔄 Сейчас выполняется: "
+        f"<b>{active}</b>\n\n"
+
+        f"⏱ Средний latency: "
         f"<b>{average:.1f} мс</b>\n"
 
         f"⬇️ Минимальный: "
@@ -394,454 +779,14 @@ def get_status_text():
         f"<b>{p95:.1f} мс</b>\n\n"
 
         f"HTTP-коды:\n"
-        f"<code>{codes}</code>\n\n"
+        f"<code>{codes_text}</code>\n\n"
 
-        f"🔒 Лимит ответа: "
-        f"<b>100 КБ</b>"
+        f"🔒 Лимит тела ответа: "
+        f"<b>100 КБ</b>\n"
+
+        f"⏱ Длительность: "
+        f"<b>{TEST_DURATION} сек.</b>"
     )
-
-
-# ============================================================
-# БЕЗОПАСНОЕ ЧТЕНИЕ ОТВЕТА
-# ============================================================
-
-async def read_response_limited(
-    response
-):
-
-    global oversized_responses
-
-    received = 0
-
-
-    # --------------------------------------------------------
-    # ПРОВЕРКА CONTENT-LENGTH
-    # --------------------------------------------------------
-
-    content_length = (
-        response.headers.get(
-            "Content-Length"
-        )
-    )
-
-
-    if content_length:
-
-        try:
-
-            declared_size = int(
-                content_length
-            )
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            declared_size = None
-
-
-        # Если сервер заранее сообщил,
-        # что ответ больше 100 КБ —
-        # тело вообще не читаем.
-
-        if (
-            declared_size is not None
-            and declared_size
-            > MAX_RESPONSE_SIZE
-        ):
-
-            oversized_responses += 1
-
-            # Закрываем ответ
-            response.close()
-
-            return False
-
-
-    # --------------------------------------------------------
-    # ПОТОКОВОЕ ЧТЕНИЕ
-    # --------------------------------------------------------
-
-    try:
-
-        async for chunk in (
-            response.content.iter_chunked(
-                CHUNK_SIZE
-            )
-        ):
-
-            received += len(chunk)
-
-
-            # ------------------------------------------------
-            # ЖЁСТКИЙ ЛИМИТ
-            # ------------------------------------------------
-
-            if (
-                received
-                > MAX_RESPONSE_SIZE
-            ):
-
-                oversized_responses += 1
-
-                # Немедленно закрываем соединение.
-                response.close()
-
-                return False
-
-
-        return True
-
-
-    except Exception:
-
-        response.close()
-
-        raise
-
-
-# ============================================================
-# ОДИН HTTP-ЗАПРОС
-# ============================================================
-
-async def make_request(
-    session
-):
-
-    global total_requests
-    global successful_requests
-    global failed_requests
-
-    global timeout_errors
-    global connection_errors
-
-
-    started = time.monotonic()
-
-
-    try:
-
-        # ----------------------------------------------------
-        # HTTP GET
-        # ----------------------------------------------------
-
-        async with session.get(
-            TARGET_URL,
-
-            allow_redirects=True,
-
-            timeout=aiohttp.ClientTimeout(
-                total=REQUEST_TIMEOUT,
-                connect=5,
-                sock_read=REQUEST_TIMEOUT,
-            ),
-        ) as response:
-
-
-            # ------------------------------------------------
-            # РЕГИСТРИРУЕМ HTTP-КОД
-            # ------------------------------------------------
-
-            http_codes[
-                response.status
-            ] = (
-                http_codes.get(
-                    response.status,
-                    0
-                )
-                + 1
-            )
-
-
-            # ------------------------------------------------
-            # ЧИТАЕМ НЕ БОЛЕЕ 100 КБ
-            # ------------------------------------------------
-
-            response_ok = (
-                await read_response_limited(
-                    response
-                )
-            )
-
-
-            elapsed = (
-                time.monotonic()
-                - started
-            )
-
-
-            total_requests += 1
-
-            response_times.append(
-                elapsed
-            )
-
-
-            # ------------------------------------------------
-            # УСПЕШНОСТЬ
-            # ------------------------------------------------
-
-            if (
-                response_ok
-                and 200
-                <= response.status
-                < 400
-            ):
-
-                successful_requests += 1
-
-            else:
-
-                failed_requests += 1
-
-
-    # --------------------------------------------------------
-    # ТАЙМАУТ
-    # --------------------------------------------------------
-
-    except asyncio.TimeoutError:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        total_requests += 1
-
-        failed_requests += 1
-
-        timeout_errors += 1
-
-        response_times.append(
-            elapsed
-        )
-
-        print(
-            "Request timeout"
-        )
-
-
-    # --------------------------------------------------------
-    # ОШИБКА СОЕДИНЕНИЯ
-    # --------------------------------------------------------
-
-    except (
-        aiohttp.ClientConnectionError,
-        aiohttp.ClientConnectorError,
-    ) as error:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        total_requests += 1
-
-        failed_requests += 1
-
-        connection_errors += 1
-
-        response_times.append(
-            elapsed
-        )
-
-        print(
-            f"Connection error: {error}"
-        )
-
-
-    # --------------------------------------------------------
-    # ПРОЧИЕ ОШИБКИ
-    # --------------------------------------------------------
-
-    except Exception as error:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        total_requests += 1
-
-        failed_requests += 1
-
-        response_times.append(
-            elapsed
-        )
-
-        print(
-            f"Request error: {error}"
-        )
-
-
-# ============================================================
-# ЗАПУСК ТЕСТА
-# ============================================================
-
-async def run_test(
-    mode_key
-):
-
-    global test_running
-    global test_started
-
-
-    mode = MODES[
-        mode_key
-    ]
-
-
-    reset_statistics()
-
-
-    test_running = True
-
-    test_started = (
-        time.monotonic()
-    )
-
-
-    stop_event.clear()
-
-
-    rps = mode["rps"]
-
-
-    # --------------------------------------------------------
-    # ИНТЕРВАЛ МЕЖДУ ЗАПРОСАМИ
-    #
-    # 1 RPS = 1 сек
-    # 2 RPS = 0.5 сек
-    # 3 RPS = ~0.333 сек
-    # --------------------------------------------------------
-
-    interval = 1 / rps
-
-
-    # --------------------------------------------------------
-    # CONNECTOR
-    #
-    # Только одно одновременное соединение.
-    # Это дополнительно предотвращает накопление
-    # огромного количества запросов.
-    # --------------------------------------------------------
-
-    connector = aiohttp.TCPConnector(
-        limit=1,
-        limit_per_host=1,
-        force_close=False,
-    )
-
-
-    timeout = aiohttp.ClientTimeout(
-        total=REQUEST_TIMEOUT,
-        connect=5,
-        sock_read=REQUEST_TIMEOUT,
-    )
-
-
-    try:
-
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-
-            headers={
-                "User-Agent":
-                    "Local-Diagnostic-Test/1.0"
-            },
-        ) as session:
-
-
-            deadline = (
-                time.monotonic()
-                + TEST_DURATION
-            )
-
-
-            next_request = (
-                time.monotonic()
-            )
-
-
-            # ------------------------------------------------
-            # ОСНОВНОЙ ЦИКЛ
-            # ------------------------------------------------
-
-            while (
-                time.monotonic()
-                < deadline
-                and not stop_event.is_set()
-            ):
-
-
-                # --------------------------------------------
-                # ОДИН ЗАПРОС
-                # --------------------------------------------
-
-                await make_request(
-                    session
-                )
-
-
-                # --------------------------------------------
-                # РАССЧИТЫВАЕМ ВРЕМЯ СЛЕДУЮЩЕГО
-                # --------------------------------------------
-
-                next_request += interval
-
-
-                delay = (
-                    next_request
-                    - time.monotonic()
-                )
-
-
-                if delay > 0:
-
-                    try:
-
-                        await asyncio.wait_for(
-                            stop_event.wait(),
-                            timeout=delay,
-                        )
-
-                    except asyncio.TimeoutError:
-
-                        pass
-
-                else:
-
-                    # Если предыдущий запрос
-                    # оказался слишком медленным,
-                    # НЕ запускаем очередь из запросов.
-                    #
-                    # Просто начинаем новый интервал
-                    # от текущего времени.
-
-                    next_request = (
-                        time.monotonic()
-                    )
-
-
-    except asyncio.CancelledError:
-
-        pass
-
-
-    except Exception as error:
-
-        print(
-            f"Test error: {error}"
-        )
-
-
-    finally:
-
-        test_running = False
-
-        stop_event.set()
 
 
 # ============================================================
@@ -851,8 +796,8 @@ async def run_test(
 @dp.message(
     CommandStart()
 )
-async def command_start(
-    message: Message
+async def start_command(
+    message: Message,
 ):
 
     if not is_allowed_user(
@@ -869,24 +814,18 @@ async def command_start(
     await message.answer(
         "🖥 <b>Local Load Test</b>\n\n"
 
-        f"🎯 Цель:\n"
+        f"Цель:\n"
         f"<code>{TARGET_URL}</code>\n\n"
 
-        "Режимы:\n"
+        "🟢 Лёгкий — 10 concurrent\n"
+        "🟡 Средний — 100 concurrent\n"
+        "🔴 Сложный — 500 concurrent\n"
+        "💀 Стресс — 2000 concurrent\n\n"
 
-        "🟢 Лёгкий — "
-        "<b>1 запрос/сек</b>\n"
+        f"⏱ Тест: "
+        f"<b>{TEST_DURATION} секунд</b>\n"
 
-        "🟡 Средний — "
-        "<b>2 запроса/сек</b>\n"
-
-        "🔴 Сложный — "
-        "<b>3 запроса/сек</b>\n\n"
-
-        f"⏱ Максимальная длительность: "
-        f"<b>{TEST_DURATION} сек.</b>\n"
-
-        f"🔒 Максимальный ответ: "
+        f"🔒 Ответ: максимум "
         f"<b>100 КБ</b>\n\n"
 
         "Выбери режим:",
@@ -895,19 +834,17 @@ async def command_start(
 
 
 # ============================================================
-# СТАРТ РЕЖИМА
+# START BUTTON
 # ============================================================
 
 @dp.callback_query(
     F.data.startswith("start:")
 )
-async def start_callback(
-    callback: CallbackQuery
+async def start_test_callback(
+    callback: CallbackQuery,
 ):
 
     global test_task
-    global test_mode
-
 
     if not is_allowed_user(
         callback.from_user
@@ -954,16 +891,9 @@ async def start_callback(
     ]
 
 
-    test_mode = (
-        mode["name"]
-    )
-
-
-    test_task = (
-        asyncio.create_task(
-            run_test(
-                mode_key
-            )
+    test_task = asyncio.create_task(
+        run_test(
+            mode_key
         )
     )
 
@@ -979,31 +909,34 @@ async def start_callback(
         f"Режим: "
         f"{mode['name']}\n"
 
-        f"Скорость: "
-        f"<b>{mode['rps']} RPS</b>\n"
+        f"Одновременных запросов: "
+        f"<b>{mode['concurrency']}</b>\n"
 
-        f"Длительность: "
+        f"Продолжительность: "
         f"<b>{TEST_DURATION} сек.</b>\n"
 
         f"Лимит ответа: "
         f"<b>100 КБ</b>\n\n"
 
-        "📊 Нажми «Статус» "
-        "для просмотра статистики.",
+        "📊 Статистика доступна "
+        "через кнопку «Статус».\n\n"
+
+        "Тест автоматически завершится "
+        "через 60 секунд.",
 
         reply_markup=main_keyboard(),
     )
 
 
 # ============================================================
-# СТАТУС
+# STATUS BUTTON
 # ============================================================
 
 @dp.callback_query(
     F.data == "status"
 )
 async def status_callback(
-    callback: CallbackQuery
+    callback: CallbackQuery,
 ):
 
     if not is_allowed_user(
@@ -1022,99 +955,27 @@ async def status_callback(
 
 
     await callback.message.edit_text(
-        get_status_text(),
-
+        await get_status_text(),
         reply_markup=main_keyboard(),
     )
 
 
 # ============================================================
-# СТОП
-# ============================================================
-
-@dp.callback_query(
-    F.data == "stop"
-)
-async def stop_callback(
-    callback: CallbackQuery
-):
-
-    global test_task
-
-
-    if not is_allowed_user(
-        callback.from_user
-    ):
-
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True,
-        )
-
-        return
-
-
-    if not test_running:
-
-        await callback.answer(
-            "Тест сейчас не запущен.",
-            show_alert=True,
-        )
-
-        return
-
-
-    # --------------------------------------------------------
-    # СИГНАЛ ОСТАНОВКИ
-    # --------------------------------------------------------
-
-    stop_event.set()
-
-
-    # --------------------------------------------------------
-    # ОТМЕНЯЕМ ЗАДАЧУ
-    # --------------------------------------------------------
-
-    if test_task:
-
-        test_task.cancel()
-
-
-    await callback.answer(
-        "🛑 Тест остановлен."
-    )
-
-
-    await asyncio.sleep(
-        0.2
-    )
-
-
-    await callback.message.edit_text(
-        "🛑 <b>Тест остановлен</b>\n\n"
-
-        + get_status_text(),
-
-        reply_markup=main_keyboard(),
-    )
-
-
-# ============================================================
-# ЗАПУСК
+# MAIN
 # ============================================================
 
 async def main():
 
     print(
-        "======================================"
+        "===================================="
     )
 
     print(
-        "Local Load Test Bot"
+        "LOCAL LOAD TEST BOT"
     )
 
     print(
-        "======================================"
+        "===================================="
     )
 
     print(
@@ -1122,15 +983,23 @@ async def main():
     )
 
     print(
-        "Light : 1 RPS"
+        "Light: 10 concurrent"
     )
 
     print(
-        "Medium: 2 RPS"
+        "Medium: 100 concurrent"
     )
 
     print(
-        "Heavy : 3 RPS"
+        "Heavy: 500 concurrent"
+    )
+
+    print(
+        "Extreme: 2000 concurrent"
+    )
+
+    print(
+        "Response limit: 100 KB"
     )
 
     print(
@@ -1138,15 +1007,7 @@ async def main():
     )
 
     print(
-        "Max response: 100 KB"
-    )
-
-    print(
-        "Max simultaneous requests: 1"
-    )
-
-    print(
-        "======================================"
+        "===================================="
     )
 
 
@@ -1156,7 +1017,7 @@ async def main():
 
 
 # ============================================================
-# MAIN
+# START
 # ============================================================
 
 if __name__ == "__main__":
