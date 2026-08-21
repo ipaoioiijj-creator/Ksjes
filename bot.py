@@ -1,1029 +1,765 @@
 import asyncio
 import os
+import sqlite3
 import time
-from urllib.parse import urlparse
-from statistics import mean
+from html import escape
 
-import aiohttp
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
 )
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
+
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = 5134277438
+OWNER_USERNAME = "@emptinessdurka"
 
-ALLOWED_USERNAME = "emptinessdurka"
-
-# ------------------------------------------------------------
-# ТОЛЬКО ЛОКАЛЬНЫЙ СЕРВЕР
-# ------------------------------------------------------------
-
-TARGET_URL = "https://safely-meditative-elephant.tilda.ws"
-
-ALLOWED_HOSTS = {
-    "safely-meditative-elephant.tilda.ws",
-}
-
-
-# ============================================================
-# ЛИМИТЫ
-# ============================================================
-
-TEST_DURATION = 60
-
-MAX_CONCURRENT = 2000
-
-MAX_RESPONSE_SIZE = 100 * 1024
-
-CHUNK_SIZE = 8192
-
-REQUEST_TIMEOUT = 10
-
-
-# ============================================================
-# РЕЖИМЫ
-# ============================================================
-
-MODES = {
-    "light": {
-        "name": "🟢 Лёгкий",
-        "concurrency": 10,
-    },
-
-    "medium": {
-        "name": "🟡 Средний",
-        "concurrency": 100,
-    },
-
-    "heavy": {
-        "name": "🔴 Сложный",
-        "concurrency": 500,
-    },
-
-    "extreme": {
-        "name": "💀 2000 Concurrent",
-        "concurrency": 2000,
-    },
-}
-
-
-# ============================================================
-# ПРОВЕРКА URL
-# ============================================================
-
-parsed_url = urlparse(TARGET_URL)
-
-if parsed_url.hostname not in ALLOWED_HOSTS:
-    raise RuntimeError(
-        "ОШИБКА: TARGET_URL должен указывать "
-        "только на localhost."
-    )
+DB_FILE = "/app/data/bot.db"
+REWARD = 10
+COOLDOWN = 3600
 
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "BOT_TOKEN не найден. "
-        "Добавь его в файл .env"
+        "Не задан BOT_TOKEN. Установите переменную окружения BOT_TOKEN."
     )
 
 
-# ============================================================
-# TELEGRAM
-# ============================================================
+db = sqlite3.connect(DB_FILE)
+db.row_factory = sqlite3.Row
+
+db.execute(
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT NOT NULL DEFAULT '',
+        points INTEGER NOT NULL DEFAULT 0,
+        last_claim INTEGER NOT NULL DEFAULT 0,
+        banned INTEGER NOT NULL DEFAULT 0
+    )
+    """
+)
+db.commit()
+
 
 bot = Bot(
-    token=BOT_TOKEN
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-
 dp = Dispatcher()
 
-
-# ============================================================
-# СОСТОЯНИЕ
-# ============================================================
-
-test_running = False
-
-test_task = None
-
-test_started = 0.0
-
-test_mode = ""
-
-current_concurrency = 0
+# Состояние админ-панели. В боте только один владелец.
+admin_states: dict[int, str] = {}
+profile_states: dict[int, str] = {}
 
 
-# ============================================================
-# СТАТИСТИКА
-# ============================================================
+def ensure_user(user_id: int, username: str | None) -> None:
+    username = username or ""
 
-total_requests = 0
-
-successful_requests = 0
-
-failed_requests = 0
-
-oversized_responses = 0
-
-timeout_errors = 0
-
-connection_errors = 0
-
-response_times = []
-
-http_codes = {}
-
-active_requests = 0
-
-
-# ============================================================
-# LOCK ДЛЯ СТАТИСТИКИ
-# ============================================================
-
-stats_lock = asyncio.Lock()
-
-
-# ============================================================
-# ПРОВЕРКА ПОЛЬЗОВАТЕЛЯ
-# ============================================================
-
-def is_allowed_user(user):
-
-    if user is None:
-        return False
-
-    username = (
-        user.username or ""
-    ).lower().lstrip("@")
-
-    return (
-        username
-        == ALLOWED_USERNAME.lower()
+    db.execute(
+        """
+        INSERT INTO users (user_id, username)
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET username = excluded.username
+        """,
+        (user_id, username),
     )
+    db.commit()
 
 
-# ============================================================
-# КЛАВИАТУРА
-# ============================================================
+def get_user(user_id: int):
+    return db.execute(
+        "SELECT * FROM users WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
 
-def main_keyboard():
 
+def find_user(identifier: str):
+    identifier = identifier.strip()
+
+    if not identifier:
+        return None
+
+    # Поддержка как @username/username, так и числового Telegram ID.
+    if identifier.lstrip("-").isdigit():
+        return db.execute(
+            "SELECT * FROM users WHERE user_id = ? LIMIT 1",
+            (int(identifier),),
+        ).fetchone()
+
+    username = identifier.lstrip("@").lower()
+
+    return db.execute(
+        """
+        SELECT * FROM users
+        WHERE LOWER(username) = ?
+        LIMIT 1
+        """,
+        (username,),
+    ).fetchone()
+
+
+def username_text(user) -> str:
+    if user["user_id"] == OWNER_ID:
+        return f"{escape(OWNER_USERNAME)} 😎"
+
+    if user["username"]:
+        name = f"@{escape(user['username'].lstrip('@'))}"
+    else:
+        name = f"ID {user['user_id']}"
+
+    if user["banned"]:
+        name += " 🚫"
+
+    return name
+
+
+def get_remaining(last_claim: int) -> int:
+    return max(0, COOLDOWN - (int(time.time()) - last_claim))
+
+
+def format_remaining(seconds: int) -> str:
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds %= 60
+
+    if hours:
+        return f"{hours} ч. {minutes} мин."
+    if minutes:
+        return f"{minutes} мин. {seconds} сек."
+    return f"{seconds} сек."
+
+
+def get_rank(user_id: int):
+    row = db.execute(
+        """
+        SELECT 1 + COUNT(*) AS rank
+        FROM users AS other
+        WHERE other.points > (
+            SELECT points FROM users WHERE user_id = ?
+        )
+        """,
+        (user_id,),
+    ).fetchone()
+    return row["rank"] if row else None
+
+
+def profile_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🟢 Лёгкий",
-                    callback_data="start:light",
-                ),
-                InlineKeyboardButton(
-                    text="🟡 Средний",
-                    callback_data="start:medium",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🔴 Сложный",
-                    callback_data="start:heavy",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="💀 2000 Concurrent",
-                    callback_data="start:extreme",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="📊 Статус",
-                    callback_data="status",
-                ),
-            ],
+                    text="🔎 Посмотреть профиль",
+                    callback_data="profile_lookup",
+                )
+            ]
         ]
     )
 
 
-# ============================================================
-# СБРОС СТАТИСТИКИ
-# ============================================================
-
-async def reset_statistics():
-
-    global total_requests
-    global successful_requests
-    global failed_requests
-
-    global oversized_responses
-    global timeout_errors
-    global connection_errors
-
-    global response_times
-    global http_codes
-    global active_requests
-
-    async with stats_lock:
-
-        total_requests = 0
-        successful_requests = 0
-        failed_requests = 0
-
-        oversized_responses = 0
-        timeout_errors = 0
-        connection_errors = 0
-
-        response_times = []
-
-        http_codes = {}
-
-        active_requests = 0
-
-
-# ============================================================
-# ЧТЕНИЕ ОТВЕТА НЕ БОЛЕЕ 100 КБ
-# ============================================================
-
-async def read_limited_response(response):
-
-    global oversized_responses
-
-    received = 0
-
-    # --------------------------------------------------------
-    # Проверяем Content-Length
-    # --------------------------------------------------------
-
-    content_length = response.headers.get(
-        "Content-Length"
-    )
-
-    if content_length:
-
-        try:
-            declared_size = int(
-                content_length
-            )
-        except (TypeError, ValueError):
-            declared_size = None
-
-        if (
-            declared_size is not None
-            and declared_size > MAX_RESPONSE_SIZE
-        ):
-
-            async with stats_lock:
-                oversized_responses += 1
-
-            response.close()
-
-            return False
-
-
-    # --------------------------------------------------------
-    # Потоковое чтение
-    # --------------------------------------------------------
-
-    try:
-
-        async for chunk in response.content.iter_chunked(
-            CHUNK_SIZE
-        ):
-
-            received += len(chunk)
-
-            if received > MAX_RESPONSE_SIZE:
-
-                async with stats_lock:
-                    oversized_responses += 1
-
-                response.close()
-
-                return False
-
-        return True
-
-    except Exception:
-
-        response.close()
-
-        raise
-
-
-# ============================================================
-# ОДИН ЗАПРОС
-# ============================================================
-
-async def perform_request(
-    session,
-):
-
-    global total_requests
-    global successful_requests
-    global failed_requests
-
-    global timeout_errors
-    global connection_errors
-
-    global active_requests
-
-    started = time.monotonic()
-
-    async with stats_lock:
-        active_requests += 1
-
-    try:
-
-        async with session.get(
-            TARGET_URL,
-            allow_redirects=True,
-        ) as response:
-
-            code = response.status
-
-            async with stats_lock:
-
-                http_codes[code] = (
-                    http_codes.get(
-                        code,
-                        0
-                    ) + 1
-                )
-
-            response_ok = (
-                await read_limited_response(
-                    response
-                )
-            )
-
-            elapsed = (
-                time.monotonic()
-                - started
-            )
-
-            async with stats_lock:
-
-                total_requests += 1
-
-                response_times.append(
-                    elapsed
-                )
-
-                if (
-                    response_ok
-                    and 200 <= code < 400
-                ):
-
-                    successful_requests += 1
-
-                else:
-
-                    failed_requests += 1
-
-    except asyncio.TimeoutError:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        async with stats_lock:
-
-            total_requests += 1
-
-            failed_requests += 1
-
-            timeout_errors += 1
-
-            response_times.append(
-                elapsed
-            )
-
-    except aiohttp.ClientConnectionError:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        async with stats_lock:
-
-            total_requests += 1
-
-            failed_requests += 1
-
-            connection_errors += 1
-
-            response_times.append(
-                elapsed
-            )
-
-    except Exception as error:
-
-        elapsed = (
-            time.monotonic()
-            - started
-        )
-
-        async with stats_lock:
-
-            total_requests += 1
-
-            failed_requests += 1
-
-            response_times.append(
-                elapsed
-            )
-
-        print(
-            f"Request error: {error}"
-        )
-
-    finally:
-
-        async with stats_lock:
-            active_requests -= 1
-
-
-# ============================================================
-# ГРУППА ЗАПРОСОВ
-# ============================================================
-
-async def worker(
-    session,
-    end_time,
-):
-
-    while (
-        time.monotonic()
-        < end_time
-    ):
-
-        await perform_request(
-            session
-        )
-
-
-# ============================================================
-# ТЕСТ
-# ============================================================
-
-async def run_test(
-    mode_key,
-):
-
-    global test_running
-    global test_started
-    global test_mode
-    global current_concurrency
-
-    mode = MODES[
-        mode_key
+def main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="🎁 Получить очки")],
+        [
+            KeyboardButton(text="👤 Профиль"),
+            KeyboardButton(text="🏆 Лидеры"),
+        ],
+        [KeyboardButton(text="📰 Новости")],
     ]
 
-    current_concurrency = min(
-        mode["concurrency"],
-        MAX_CONCURRENT,
-    )
+    if user_id == OWNER_ID:
+        rows.append([KeyboardButton(text="⚙️ Админ-панель")])
 
-    test_mode = mode["name"]
-
-    await reset_statistics()
-
-    test_running = True
-
-    test_started = (
-        time.monotonic()
-    )
-
-    end_time = (
-        test_started
-        + TEST_DURATION
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
-    timeout = aiohttp.ClientTimeout(
-        total=REQUEST_TIMEOUT,
-        connect=5,
-        sock_read=REQUEST_TIMEOUT,
+def admin_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🚫 Забанить"),
+                KeyboardButton(text="♻️ Чёрный список"),
+            ],
+            [KeyboardButton(text="🧹 Очистить игрока")],
+            [KeyboardButton(text="👥 Пользователи")],
+            [KeyboardButton(text="📢 Рассылка")],
+            [KeyboardButton(text="💥 Очистить всё")],
+            [KeyboardButton(text="🔙 Главное меню")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
-    connector = aiohttp.TCPConnector(
-        limit=MAX_CONCURRENT,
-        limit_per_host=MAX_CONCURRENT,
-        ttl_dns_cache=300,
+def cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
-    tasks = []
+async def check_access(message: Message) -> bool:
+    user = message.from_user
+    if user is None:
+        return False
 
-    try:
+    ensure_user(user.id, user.username)
+    row = get_user(user.id)
 
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={
-                "User-Agent":
-                    "Local-Load-Test/1.0"
-            },
-        ) as session:
+    if row is None:
+        return False
 
-            # ------------------------------------------------
-            # Создаём заданное количество параллельных workers
-            # ------------------------------------------------
-
-            for _ in range(
-                current_concurrency
-            ):
-
-                task = asyncio.create_task(
-                    worker(
-                        session,
-                        end_time,
-                    )
-                )
-
-                tasks.append(task)
-
-
-            # ------------------------------------------------
-            # Ждём окончания 60 секунд
-            # ------------------------------------------------
-
-            remaining = max(
-                0,
-                end_time
-                - time.monotonic()
-            )
-
-            await asyncio.sleep(
-                remaining
-            )
-
-
-    except Exception as error:
-
-        print(
-            f"Test error: {error}"
-        )
-
-
-    finally:
-
-        # ----------------------------------------------------
-        # После 60 секунд прекращаем workers
-        # ----------------------------------------------------
-
-        for task in tasks:
-            task.cancel()
-
-        await asyncio.gather(
-            *tasks,
-            return_exceptions=True,
-        )
-
-        test_running = False
-
-        current_concurrency = 0
-
-
-# ============================================================
-# СТАТИСТИКА
-# ============================================================
-
-async def get_status_text():
-
-    async with stats_lock:
-
-        total = total_requests
-
-        successful = (
-            successful_requests
-        )
-
-        failed = failed_requests
-
-        oversized = (
-            oversized_responses
-        )
-
-        timeouts = (
-            timeout_errors
-        )
-
-        connection_errors_count = (
-            connection_errors
-        )
-
-        active = active_requests
-
-        times = list(
-            response_times
-        )
-
-        codes = dict(
-            http_codes
-        )
-
-
-    if test_started:
-
-        elapsed = (
-            time.monotonic()
-            - test_started
-        )
-
-    else:
-
-        elapsed = 0
-
-
-    if elapsed > 0:
-
-        rps = (
-            total / elapsed
-        )
-
-    else:
-
-        rps = 0
-
-
-    if times:
-
-        average = (
-            mean(times)
-            * 1000
-        )
-
-        minimum = (
-            min(times)
-            * 1000
-        )
-
-        maximum = (
-            max(times)
-            * 1000
-        )
-
-        sorted_times = sorted(
-            times
-        )
-
-        p95_index = int(
-            len(sorted_times)
-            * 0.95
-        )
-
-        p95_index = min(
-            p95_index,
-            len(sorted_times) - 1,
-        )
-
-        p95 = (
-            sorted_times[p95_index]
-            * 1000
-        )
-
-    else:
-
-        average = 0
-        minimum = 0
-        maximum = 0
-        p95 = 0
-
-
-    if codes:
-
-        codes_text = ", ".join(
-            f"{code}: {count}"
-            for code, count
-            in sorted(
-                codes.items()
-            )
-        )
-
-    else:
-
-        codes_text = "—"
-
-
-    state = (
-        "🟢 Запущен"
-        if test_running
-        else "🔴 Завершён"
-    )
-
-
-    return (
-        "📊 <b>Статус теста</b>\n\n"
-
-        f"Состояние: {state}\n"
-
-        f"Режим: "
-        f"{test_mode or '—'}\n"
-
-        f"Concurrency: "
-        f"<b>{current_concurrency}</b>\n"
-
-        f"Время: "
-        f"{elapsed:.1f} сек.\n\n"
-
-        f"📨 Всего запросов: "
-        f"<b>{total}</b>\n"
-
-        f"✅ Успешных: "
-        f"<b>{successful}</b>\n"
-
-        f"❌ Неуспешных: "
-        f"<b>{failed}</b>\n"
-
-        f"📦 >100 КБ: "
-        f"<b>{oversized}</b>\n"
-
-        f"⏰ Таймаутов: "
-        f"<b>{timeouts}</b>\n"
-
-        f"🔌 Ошибок соединения: "
-        f"<b>{connection_errors_count}</b>\n\n"
-
-        f"⚡ RPS: "
-        f"<b>{rps:.2f}</b>\n"
-
-        f"🔄 Сейчас выполняется: "
-        f"<b>{active}</b>\n\n"
-
-        f"⏱ Средний latency: "
-        f"<b>{average:.1f} мс</b>\n"
-
-        f"⬇️ Минимальный: "
-        f"<b>{minimum:.1f} мс</b>\n"
-
-        f"⬆️ Максимальный: "
-        f"<b>{maximum:.1f} мс</b>\n"
-
-        f"📈 P95: "
-        f"<b>{p95:.1f} мс</b>\n\n"
-
-        f"HTTP-коды:\n"
-        f"<code>{codes_text}</code>\n\n"
-
-        f"🔒 Лимит тела ответа: "
-        f"<b>100 КБ</b>\n"
-
-        f"⏱ Длительность: "
-        f"<b>{TEST_DURATION} сек.</b>"
-    )
-
-
-# ============================================================
-# /START
-# ============================================================
-
-@dp.message(
-    CommandStart()
-)
-async def start_command(
-    message: Message,
-):
-
-    if not is_allowed_user(
-        message.from_user
-    ):
-
+    if row["banned"] and user.id != OWNER_ID:
         await message.answer(
-            "⛔ Доступ запрещён."
+            "🚫 <b>Ваша учётная запись была заблокирована в боте!</b>\n"
+            "Подать апелляцию - @emptinessdurka"
         )
+        return False
 
+    return True
+
+
+def is_owner(message: Message) -> bool:
+    return message.from_user is not None and message.from_user.id == OWNER_ID
+
+
+@dp.message(CommandStart())
+async def start(message: Message) -> None:
+    user = message.from_user
+    if user is None:
         return
 
+    ensure_user(user.id, user.username)
+    row = get_user(user.id)
+
+    if row is None:
+        await message.answer("Не удалось создать профиль. Попробуйте ещё раз.")
+        return
+
+    if row["banned"] and user.id != OWNER_ID:
+        await message.answer(
+            "🚫 <b>Ваша учётная запись была заблокирована в боте!</b>\n"
+            "Подать апелляцию - @emptinessdurka"
+        )
+        return
 
     await message.answer(
-        "🖥 <b>Local Load Test</b>\n\n"
-
-        f"Цель:\n"
-        f"<code>{TARGET_URL}</code>\n\n"
-
-        "🟢 Лёгкий — 10 concurrent\n"
-        "🟡 Средний — 100 concurrent\n"
-        "🔴 Сложный — 500 concurrent\n"
-        "💀 Стресс — 2000 concurrent\n\n"
-
-        f"⏱ Тест: "
-        f"<b>{TEST_DURATION} секунд</b>\n"
-
-        f"🔒 Ответ: максимум "
-        f"<b>100 КБ</b>\n\n"
-
-        "Выбери режим:",
-        reply_markup=main_keyboard(),
+        "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
+        "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
+        "😎 Автор: @emptinessdurka",
+        reply_markup=main_keyboard(user.id),
     )
 
 
-# ============================================================
-# START BUTTON
-# ============================================================
-
-@dp.callback_query(
-    F.data.startswith("start:")
-)
-async def start_test_callback(
-    callback: CallbackQuery,
-):
-
-    global test_task
-
-    if not is_allowed_user(
-        callback.from_user
-    ):
-
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True,
-        )
-
+@dp.message(F.text == "🎁 Получить очки")
+async def claim(message: Message) -> None:
+    if not await check_access(message):
         return
 
+    user_id = message.from_user.id
+    now = int(time.time())
 
-    if test_running:
+    # Атомарная проверка и выдача награды защищает от двойного начисления
+    # при почти одновременных запросах.
+    cursor = db.execute(
+        """
+        UPDATE users
+        SET points = points + ?,
+            last_claim = ?
+        WHERE user_id = ?
+          AND last_claim <= ?
+          AND banned = 0
+        """,
+        (REWARD, now, user_id, now - COOLDOWN),
+    )
+    db.commit()
 
-        await callback.answer(
-            "⚠️ Тест уже запущен.",
-            show_alert=True,
+    if cursor.rowcount == 0:
+        row = get_user(user_id)
+        remaining = get_remaining(row["last_claim"]) if row else COOLDOWN
+
+        await message.answer(
+            "⏳ Награду нельзя забрать сейчас!\n"
+            f"Попробуйте через {format_remaining(remaining)} 🕐",
+            reply_markup=main_keyboard(user_id),
         )
-
         return
 
-
-    mode_key = (
-        callback.data.split(
-            ":",
-            1
-        )[1]
+    await message.answer(
+        f"🎁 Вы получили {REWARD} очков!\n"
+        "Возвращайтесь через 1 час! ⏰",
+        reply_markup=main_keyboard(user_id),
     )
 
 
-    if mode_key not in MODES:
-
-        await callback.answer(
-            "Неизвестный режим.",
-            show_alert=True,
-        )
-
+@dp.message(F.text == "👤 Профиль")
+async def profile(message: Message) -> None:
+    if not await check_access(message):
         return
 
-
-    mode = MODES[
-        mode_key
-    ]
-
-
-    test_task = asyncio.create_task(
-        run_test(
-            mode_key
-        )
-    )
-
-
-    await callback.answer(
-        f"Запущен {mode['name']}"
-    )
-
-
-    await callback.message.edit_text(
-        "🚀 <b>Тест запущен</b>\n\n"
-
-        f"Режим: "
-        f"{mode['name']}\n"
-
-        f"Одновременных запросов: "
-        f"<b>{mode['concurrency']}</b>\n"
-
-        f"Продолжительность: "
-        f"<b>{TEST_DURATION} сек.</b>\n"
-
-        f"Лимит ответа: "
-        f"<b>100 КБ</b>\n\n"
-
-        "📊 Статистика доступна "
-        "через кнопку «Статус».\n\n"
-
-        "Тест автоматически завершится "
-        "через 60 секунд.",
-
-        reply_markup=main_keyboard(),
-    )
-
-
-# ============================================================
-# STATUS BUTTON
-# ============================================================
-
-@dp.callback_query(
-    F.data == "status"
-)
-async def status_callback(
-    callback: CallbackQuery,
-):
-
-    if not is_allowed_user(
-        callback.from_user
-    ):
-
-        await callback.answer(
-            "⛔ Доступ запрещён.",
-            show_alert=True,
-        )
-
+    row = get_user(message.from_user.id)
+    if row is None:
         return
 
+    rank = get_rank(row["user_id"])
 
+    await message.answer(
+        "👤 <b>Ваш профиль:</b>\n"
+        f"Юзернейм - {username_text(row)}\n"
+        f"Очки - {row['points']} 💰\n"
+        f"Место в топе - {rank} 🏆",
+        reply_markup=profile_inline_keyboard(),
+    )
+    await message.answer(
+        "🏠 Главное меню",
+        reply_markup=main_keyboard(message.from_user.id),
+    )
+
+
+@dp.message(F.text == "📰 Новости")
+async def news(message: Message) -> None:
+    if not await check_access(message):
+        return
+
+    await message.answer(
+        "📰 <b>Новости</b>",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📰 Открыть новостной канал",
+                        url="https://t.me/points_collector_channel",
+                    )
+                ]
+            ]
+        ),
+    )
+
+
+@dp.message(F.text == "🏆 Лидеры")
+async def leaders(message: Message) -> None:
+    if not await check_access(message):
+        return
+
+    rows = db.execute(
+        """
+        SELECT * FROM users
+        ORDER BY points DESC, user_id ASC
+        LIMIT 5
+        """
+    ).fetchall()
+
+    text = "🏆 <b>Лидеры</b>\n\n"
+    places = ["👑", "2 место", "3 место", "4 место", "5 место"]
+
+    if rows:
+        for index, row in enumerate(rows):
+            text += (
+                f"{places[index]}: {username_text(row)} - "
+                f"{row['points']} очков\n"
+            )
+    else:
+        text += "Пока здесь никого нет 😴\n"
+
+    await message.answer(
+        text,
+        reply_markup=main_keyboard(message.from_user.id),
+    )
+
+
+@dp.callback_query(F.data == "profile_lookup")
+async def profile_lookup_callback(callback) -> None:
+    user = callback.from_user
+    if user is None:
+        return
+
+    profile_states[user.id] = "lookup"
     await callback.answer()
-
-
-    await callback.message.edit_text(
-        await get_status_text(),
-        reply_markup=main_keyboard(),
+    await callback.message.answer(
+        "🔎 Введите юзернейм или ID пользователя:",
+        reply_markup=cancel_keyboard() if user.id == OWNER_ID else None,
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
+@dp.message(F.text == "⚙️ Админ-панель")
+async def admin_panel(message: Message) -> None:
+    if not is_owner(message):
+        return
 
-async def main():
+    admin_states.pop(OWNER_ID, None)
 
-    print(
-        "===================================="
-    )
-
-    print(
-        "LOCAL LOAD TEST BOT"
-    )
-
-    print(
-        "===================================="
-    )
-
-    print(
-        f"Target: {TARGET_URL}"
-    )
-
-    print(
-        "Light: 10 concurrent"
-    )
-
-    print(
-        "Medium: 100 concurrent"
-    )
-
-    print(
-        "Heavy: 500 concurrent"
-    )
-
-    print(
-        "Extreme: 2000 concurrent"
-    )
-
-    print(
-        "Response limit: 100 KB"
-    )
-
-    print(
-        "Duration: 60 seconds"
-    )
-
-    print(
-        "===================================="
+    await message.answer(
+        "⚙️ <b>Админ-панель</b>",
+        reply_markup=admin_keyboard(),
     )
 
 
-    await dp.start_polling(
-        bot
+@dp.message(F.text == "🚫 Забанить")
+async def ban_start(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states[OWNER_ID] = "ban"
+
+    await message.answer(
+        "🚫 Введите юзернейм:",
+        reply_markup=cancel_keyboard(),
     )
 
 
-# ============================================================
-# START
-# ============================================================
+@dp.message(F.text == "♻️ Чёрный список")
+async def blacklist(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    rows = db.execute(
+        "SELECT * FROM users WHERE banned = 1 ORDER BY user_id"
+    ).fetchall()
+
+    text = "♻️ <b>Чёрный список</b>\n\n"
+
+    if rows:
+        for row in rows:
+            text += f"🚫 {username_text(row)}\n"
+
+        text += "\nВведите имя пользователя для разблокировки:"
+        admin_states[OWNER_ID] = "unban"
+        markup = cancel_keyboard()
+    else:
+        text += "Список пуст."
+        markup = admin_keyboard()
+
+    await message.answer(text, reply_markup=markup)
+
+
+@dp.message(F.text == "🧹 Очистить игрока")
+async def clear_player_start(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states[OWNER_ID] = "clear_user"
+
+    await message.answer(
+        "🧹 Введите юзернейм:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@dp.message(F.text == "👥 Пользователи")
+async def users_count(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    row = db.execute(
+        "SELECT COUNT(*) AS count FROM users"
+    ).fetchone()
+
+    count = row["count"] if row else 0
+
+    await message.answer(
+        f"👥 Число пользователей в боте: {count}",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@dp.message(F.text == "📢 Рассылка")
+async def broadcast_start(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states[OWNER_ID] = "broadcast"
+    await message.answer(
+        "📢 Введите сообщение для рассылки всем пользователям бота.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@dp.message(F.text == "💥 Очистить всё")
+async def clear_all_start(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states[OWNER_ID] = "wipe_first"
+
+    await message.answer(
+        "⚠️ Вы действительно хотите полностью очистить бота?\n\n"
+        "Напишите ДА для продолжения.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@dp.message(F.text == "❌ Отмена")
+async def cancel(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states.pop(OWNER_ID, None)
+    profile_states.pop(message.from_user.id, None)
+
+    await message.answer(
+        "❌ Действие отменено.",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@dp.message(F.text == "🔙 Главное меню")
+async def back_to_menu(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states.pop(OWNER_ID, None)
+
+    await message.answer(
+        "🏠 Главное меню",
+        reply_markup=main_keyboard(OWNER_ID),
+    )
+
+
+@dp.message()
+async def admin_input(message: Message) -> None:
+    # Поиск профиля доступен всем пользователям.
+    if message.from_user is not None:
+        profile_state = profile_states.get(message.from_user.id)
+        if profile_state == "lookup":
+            identifier = (message.text or "").strip()
+            row = find_user(identifier)
+
+            if row is None:
+                await message.answer("❌ Пользователь не найден.")
+                return
+
+            profile_states.pop(message.from_user.id, None)
+            rank = get_rank(row["user_id"])
+
+            await message.answer(
+                "👤 <b>Профиль пользователя</b>\n"
+                f"Юзернейм - {username_text(row)}\n"
+                f"Баланс - {row['points']} 💰\n"
+                f"Место в топе - {rank} 🏆",
+                reply_markup=main_keyboard(message.from_user.id),
+            )
+            return
+
+    if not is_owner(message):
+        return
+
+    state = admin_states.get(OWNER_ID)
+    if not state:
+        return
+
+    text = (message.text or "").strip()
+
+    if state == "broadcast":
+        if not text:
+            await message.answer(
+                "❌ Сообщение не может быть пустым.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        rows = db.execute(
+            "SELECT user_id FROM users WHERE banned = 0"
+        ).fetchall()
+
+        admin_states.pop(OWNER_ID, None)
+        sent = 0
+        failed = 0
+
+        for row in rows:
+            try:
+                await bot.send_message(row["user_id"], text)
+                sent += 1
+            except Exception:
+                failed += 1
+
+        await message.answer(
+            f"📢 Рассылка завершена.\n"
+            f"✅ Доставлено: {sent}\n"
+            f"❌ Не доставлено: {failed}",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    if state == "ban":
+        row = find_user(text)
+
+        if row is None:
+            await message.answer(
+                "❌ Пользователь не найден.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        if row["user_id"] == OWNER_ID:
+            await message.answer(
+                "❌ Нельзя заблокировать владельца бота.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        if row["banned"]:
+            await message.answer(
+                "🚫 Пользователь уже заблокирован.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        db.execute(
+            "UPDATE users SET banned = 1 WHERE user_id = ?",
+            (row["user_id"],),
+        )
+        db.commit()
+        admin_states.pop(OWNER_ID, None)
+
+        try:
+            await bot.send_message(
+                row["user_id"],
+                "🚫 Ваша учётная запись была заблокирована в боте!\n"
+                "Подать апелляцию - @emptinessdurka",
+            )
+        except Exception:
+            pass
+
+        await message.answer(
+            f"🚫 {username_text(row)} заблокирован.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    if state == "unban":
+        row = find_user(text)
+
+        if row is None:
+            await message.answer(
+                "❌ Пользователь не найден.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        if not row["banned"]:
+            await message.answer(
+                "ℹ️ Пользователь не находится в чёрном списке.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        db.execute(
+            "UPDATE users SET banned = 0 WHERE user_id = ?",
+            (row["user_id"],),
+        )
+        db.commit()
+        admin_states.pop(OWNER_ID, None)
+
+        try:
+            await bot.send_message(
+                row["user_id"],
+                "♻️ Ваша учётная запись снова доступна в боте!",
+            )
+        except Exception:
+            pass
+
+        await message.answer(
+            f"♻️ {username_text(row)} снова доступен.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    if state == "clear_user":
+        row = find_user(text)
+
+        if row is None:
+            await message.answer(
+                "❌ Пользователь не найден.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        if row["user_id"] == OWNER_ID:
+            await message.answer(
+                "❌ Нельзя очистить профиль владельца этим действием.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        db.execute(
+            """
+            UPDATE users
+            SET points = 0,
+                last_claim = 0
+            WHERE user_id = ?
+            """,
+            (row["user_id"],),
+        )
+        db.commit()
+        admin_states.pop(OWNER_ID, None)
+
+        await message.answer(
+            f"🧹 Данные игрока {username_text(row)} очищены.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    if state == "wipe_first":
+        if text.upper() != "ДА":
+            await message.answer(
+                "❌ Напишите ДА для продолжения.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        admin_states[OWNER_ID] = "wipe_second"
+
+        await message.answer(
+            "⚠️ Последнее подтверждение.\n\n"
+            "Напишите УДАЛИТЬ для полной очистки.",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    if state == "wipe_second":
+        if text.upper() != "УДАЛИТЬ":
+            await message.answer(
+                "❌ Напишите УДАЛИТЬ для подтверждения.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        # Полностью очищаем таблицу. При следующем сообщении владелец
+        # будет автоматически создан снова через ensure_user().
+        db.execute("DELETE FROM users")
+        db.commit()
+        admin_states.pop(OWNER_ID, None)
+
+        await message.answer(
+            "💥 Бот полностью очищен.",
+            reply_markup=admin_keyboard(),
+        )
+
+
+async def main() -> None:
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+    finally:
+        await bot.session.close()
+        db.close()
+
 
 if __name__ == "__main__":
-
-    try:
-
-        asyncio.run(
-            main()
-        )
-
-    except KeyboardInterrupt:
-
-        print(
-            "\nBot stopped."
-        )
+    asyncio.run(main())
