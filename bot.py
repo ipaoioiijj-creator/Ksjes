@@ -7,13 +7,14 @@ from html import escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    FSInputFile,
 )
 
 
@@ -23,6 +24,7 @@ OWNER_ID = 5134277438
 OWNER_USERNAME = "@emptinessdurka"
 
 DB_FILE = "/app/data/bot.db"
+MASKOT_FILE = "/app/data/maskot.jpeg"
 REWARD = 10
 COOLDOWN = 3600
 
@@ -153,6 +155,74 @@ def get_rank(user_id: int):
     return row["rank"] if row else None
 
 
+def help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📖 Основа", callback_data="help_base"),
+                InlineKeyboardButton(text="🧹 Вайпы", callback_data="help_wipes"),
+            ],
+            [
+                InlineKeyboardButton(text="🏅 Значки", callback_data="help_badges"),
+            ],
+        ]
+    )
+
+
+def help_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="help_back")]
+        ]
+    )
+
+
+HELP_TEXT = {
+    "base": (
+        "📖 <b>Основа</b>\n\n"
+        "В меню есть кнопка «🎁 Получить очки». Нажимай на неё и получай "
+        "10 очков каждый час! В «Профиле» ты можешь увидеть кол-во своих "
+        "очков и место в таблице лидеров. В «Лидерах» ты можешь отслеживать "
+        "лучших игроков. В «Новостях» ты найдёшь ссылку для перехода в "
+        "новостной канал бота, там вся полезная информация и опросы 💕"
+    ),
+    "wipes": (
+        "🧹 <b>Вайпы</b>\n\n"
+        "Вайпы (от англ. wipe — «стереть», «очистить»)\n\n"
+        "Вайпы (очистка серверов) нужна для баланса между новичками и "
+        "долгими игроками. В девятое число каждого месяца проходит опрос "
+        "в новостном канале. После опроса решается будет ли сброс в этом "
+        "месяце всех очков или нет ✨"
+    ),
+    "badges": (
+        "🏅 <b>Значки</b>\n\n"
+        "Наверняка вы замечали в лидерах какие-то значки после никнейма. "
+        "Что они значат?\n\n"
+        "😎 - администрация бота (данный значок есть только у владельца бота)\n\n"
+        "🚫 - блокировка (человек заблокирован в боте и не может ничего в нём делать)"
+    ),
+}
+
+
+async def send_help(message: Message) -> None:
+    text = (
+        "Привет, я Уголёк! 🖤\n"
+        "Готова рассказать тебе всё, что нужно знать о боте ✨"
+    )
+
+    if os.path.exists(MASKOT_FILE):
+        await message.answer_photo(
+            FSInputFile(MASKOT_FILE),
+            caption=text,
+            reply_markup=help_keyboard(),
+        )
+    else:
+        await message.answer(
+            text,
+            reply_markup=help_keyboard(),
+        )
+
+
 def profile_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -173,7 +243,7 @@ def main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
             KeyboardButton(text="👤 Профиль"),
             KeyboardButton(text="🏆 Лидеры"),
         ],
-        [KeyboardButton(text="📰 Новости")],
+        [KeyboardButton(text="📰 Новости"), KeyboardButton(text="❓ Помощь")],
     ]
 
     if user_id == OWNER_ID:
@@ -196,7 +266,8 @@ def admin_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🧹 Очистить игрока")],
             [KeyboardButton(text="👥 Пользователи")],
             [KeyboardButton(text="📢 Рассылка")],
-            [KeyboardButton(text="💥 Очистить всё")],
+            [KeyboardButton(text="💥 Сбросить очки")],
+            [KeyboardButton(text="🗑️ Удалить всех пользователей")],
             [KeyboardButton(text="🔙 Главное меню")],
         ],
         resize_keyboard=True,
@@ -262,6 +333,51 @@ async def start(message: Message) -> None:
         "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
         "😎 Автор: @emptinessdurka",
         reply_markup=main_keyboard(user.id),
+    )
+
+
+@dp.message(Command("help"))
+@dp.message(F.text == "❓ Помощь")
+async def help_command(message: Message) -> None:
+    if not await check_access(message):
+        return
+    await send_help(message)
+
+
+@dp.callback_query(F.data == "help_base")
+async def help_base(callback) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        HELP_TEXT["base"],
+        reply_markup=help_back_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "help_wipes")
+async def help_wipes(callback) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        HELP_TEXT["wipes"],
+        reply_markup=help_back_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "help_badges")
+async def help_badges(callback) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        HELP_TEXT["badges"],
+        reply_markup=help_back_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "help_back")
+async def help_back(callback) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        "Привет, я Уголёк! 🖤\n"
+        "Готова рассказать тебе всё, что нужно знать о боте ✨",
+        reply_markup=help_keyboard(),
     )
 
 
@@ -488,16 +604,32 @@ async def broadcast_start(message: Message) -> None:
     )
 
 
-@dp.message(F.text == "💥 Очистить всё")
-async def clear_all_start(message: Message) -> None:
+@dp.message(F.text == "💥 Сбросить очки")
+async def reset_points_start(message: Message) -> None:
     if not is_owner(message):
         return
 
-    admin_states[OWNER_ID] = "wipe_first"
+    admin_states[OWNER_ID] = "reset_points"
 
     await message.answer(
-        "⚠️ Вы действительно хотите полностью очистить бота?\n\n"
-        "Напишите ДА для продолжения.",
+        "⚠️ Ты действительно хочешь сбросить очки у всех пользователей?\n\n"
+        "Аккаунты пользователей останутся, сбросятся только очки и таймеры.\n\n"
+        "Напиши ДА для продолжения.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@dp.message(F.text == "🗑️ Удалить всех пользователей")
+async def delete_all_users_start(message: Message) -> None:
+    if not is_owner(message):
+        return
+
+    admin_states[OWNER_ID] = "delete_users_first"
+
+    await message.answer(
+        "⚠️ Ты действительно хочешь удалить всех пользователей?\n\n"
+        "Это полностью удалит аккаунты, очки и блокировки из базы.\n"
+        "Напиши ДА для продолжения.",
         reply_markup=cancel_keyboard(),
     )
 
@@ -713,39 +845,62 @@ async def admin_input(message: Message) -> None:
         )
         return
 
-    if state == "wipe_first":
+    if state == "reset_points":
         if text.upper() != "ДА":
             await message.answer(
-                "❌ Напишите ДА для продолжения.",
+                "❌ Напиши ДА для продолжения.",
                 reply_markup=cancel_keyboard(),
             )
             return
 
-        admin_states[OWNER_ID] = "wipe_second"
+        db.execute(
+            """
+            UPDATE users
+            SET points = 0,
+                last_claim = 0
+            """
+        )
+        db.commit()
+        admin_states.pop(OWNER_ID, None)
+
+        await message.answer(
+            "💥 Очки и таймеры всех пользователей сброшены.\n"
+            "👥 Сами аккаунты пользователей остались на месте.",
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    if state == "delete_users_first":
+        if text.upper() != "ДА":
+            await message.answer(
+                "❌ Напиши ДА для продолжения.",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        admin_states[OWNER_ID] = "delete_users_second"
 
         await message.answer(
             "⚠️ Последнее подтверждение.\n\n"
-            "Напишите УДАЛИТЬ для полной очистки.",
+            "Напиши УДАЛИТЬ для полного удаления всех пользователей.",
             reply_markup=cancel_keyboard(),
         )
         return
 
-    if state == "wipe_second":
+    if state == "delete_users_second":
         if text.upper() != "УДАЛИТЬ":
             await message.answer(
-                "❌ Напишите УДАЛИТЬ для подтверждения.",
+                "❌ Напиши УДАЛИТЬ для подтверждения.",
                 reply_markup=cancel_keyboard(),
             )
             return
 
-        # Полностью очищаем таблицу. При следующем сообщении владелец
-        # будет автоматически создан снова через ensure_user().
         db.execute("DELETE FROM users")
         db.commit()
         admin_states.pop(OWNER_ID, None)
 
         await message.answer(
-            "💥 Бот полностью очищен.",
+            "🗑️ Все пользователи полностью удалены из базы.",
             reply_markup=admin_keyboard(),
         )
 
