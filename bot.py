@@ -16,7 +16,6 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
-from aiogram.types import FSInputFile
 
 
 
@@ -27,7 +26,6 @@ OWNER_USERNAME = "@emptinessdurka"
 DB_FILE = "/app/data/bot.db"
 REWARD = 10
 COOLDOWN = 3600
-MASCOT_PATH = "/app/data/maskot.jpeg"
 
 
 if not BOT_TOKEN:
@@ -52,6 +50,15 @@ db.execute(
 )
 db.commit()
 
+# Сохраняем признак бота для защиты списка лидеров.
+try:
+    db.execute("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
+db.execute("CREATE INDEX IF NOT EXISTS idx_users_leaderboard ON users(is_bot, points DESC, user_id ASC)")
+db.commit()
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -63,17 +70,16 @@ dp = Dispatcher()
 admin_states: dict[int, str] = {}
 
 
-def ensure_user(user_id: int, username: str | None) -> None:
+def ensure_user(user_id: int, username: str | None, is_bot: bool = False) -> None:
     username = username or ""
-
     db.execute(
         """
-        INSERT INTO users (user_id, username)
-        VALUES (?, ?)
+        INSERT INTO users (user_id, username, is_bot)
+        VALUES (?, ?, ?)
         ON CONFLICT(user_id)
-        DO UPDATE SET username = excluded.username
+        DO UPDATE SET username = excluded.username, is_bot = excluded.is_bot
         """,
-        (user_id, username),
+        (user_id, username, int(is_bot)),
     )
     db.commit()
 
@@ -146,8 +152,9 @@ def get_rank(user_id: int):
         """
         SELECT 1 + COUNT(*) AS rank
         FROM users AS other
-        WHERE other.points > (
-            SELECT points FROM users WHERE user_id = ?
+        WHERE other.is_bot = 0
+          AND other.points > (
+            SELECT points FROM users WHERE user_id = ? AND is_bot = 0
         )
         """,
         (user_id,),
@@ -155,19 +162,30 @@ def get_rank(user_id: int):
     return row["rank"] if row else None
 
 
-def main_inline_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="🎁 Получить очки", callback_data="main_claim")],
-        [
-            InlineKeyboardButton(text="👤 Профиль", callback_data="main_profile"),
-            InlineKeyboardButton(text="🏆 Лидеры", callback_data="main_leaders"),
+def main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Получить очки", callback_data="claim")],
+            [
+                InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
+                InlineKeyboardButton(text="🏆 Лидеры", callback_data="leaders"),
+            ],
+            [InlineKeyboardButton(text="📰 Новости", callback_data="news")],
+            [InlineKeyboardButton(text="❓ Помощь", callback_data="help")],
+        ]
+    )
+
+def owner_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🎁 Получить очки")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Лидеры")],
+            [KeyboardButton(text="📰 Новости")],
+            [KeyboardButton(text="⚙️ Админ-панель")],
         ],
-        [InlineKeyboardButton(text="📰 Новости", callback_data="main_news")],
-        [InlineKeyboardButton(text="❓ Помощь", callback_data="main_help")],
-    ]
-    if user_id == OWNER_ID:
-        rows.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def admin_keyboard() -> ReplyKeyboardMarkup:
@@ -199,12 +217,14 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
 
 async def check_access(message: Message) -> bool:
     user = message.from_user
-    if user is None:
+    if user is None or message.chat.type != "private":
         return False
 
-    ensure_user(user.id, user.username)
-    row = get_user(user.id)
+    if user.is_bot and user.id != OWNER_ID:
+        return False
 
+    ensure_user(user.id, user.username, user.is_bot)
+    row = get_user(user.id)
     if row is None:
         return False
 
@@ -225,12 +245,11 @@ def is_owner(message: Message) -> bool:
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
     user = message.from_user
-    if user is None:
+    if user is None or message.chat.type != "private" or user.is_bot:
         return
 
-    ensure_user(user.id, user.username)
+    ensure_user(user.id, user.username, user.is_bot)
     row = get_user(user.id)
-
     if row is None:
         await message.answer("Не удалось создать профиль. Попробуйте ещё раз.")
         return
@@ -242,283 +261,226 @@ async def start(message: Message) -> None:
         )
         return
 
-    # У старых пользователей могла остаться прежняя Reply-клавиатура.
-    # Убираем её один раз при /start, затем показываем новое inline-меню.
     if user.id != OWNER_ID:
-        cleanup = await message.answer("✨", reply_markup=ReplyKeyboardRemove())
-        try:
-            await cleanup.delete()
-        except Exception:
-            pass
+        # Убираем старую Reply-клавиатуру из предыдущей версии бота.
+        await message.answer("✨ Обновляю меню...", reply_markup=ReplyKeyboardRemove())
 
     await message.answer(
         "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
         "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
         "😎 Автор: @emptinessdurka",
-        reply_markup=main_inline_keyboard(user.id),
+        reply_markup=owner_menu_keyboard() if user.id == OWNER_ID else main_keyboard(),
     )
 
+@dp.message(Command("help"))
+async def help_command(message: Message) -> None:
+    if message.from_user is None or message.chat.type != "private" or message.from_user.is_bot:
+        return
+    await send_help(message, "help")
 
-@dp.callback_query(F.data == "main_claim")
-async def claim(callback) -> None:
+
+async def replace_callback_message(callback, text: str, markup: InlineKeyboardMarkup) -> None:
+    """Заменяет содержимое callback-сообщения независимо от того, было ли это фото."""
     message = callback.message
-    user = callback.from_user
-    if message is None or user is None:
-        return
-    await callback.answer()
-    if not await check_access(message):
-        return
+    if message.photo:
+        await message.delete()
+        await message.answer(text, reply_markup=markup)
+    else:
+        await message.edit_text(text, reply_markup=markup)
 
-    user_id = user.id
-    now = int(time.time())
+async def send_help(target, section: str = "help") -> None:
+    texts = {
+        "help": "Привет, я Уголёк! 🐾\nГотова рассказать тебе всё ✨",
+        "base": (
+            "📖 <b>Основа</b>\n\n"
+            "В меню есть кнопка «🎁 Получить очки». Нажимай на неё и получай 10 очков каждый час! "
+            "В «Профиле» ты можешь увидеть кол-во своих очков и место в таблице лидеров. "
+            "В «Лидерах» ты можешь отслеживать лучших игроков. "
+            "В «Новостях» ты найдёшь ссылку для перехода в новостной канал бота, там вся полезная информация и опросы 🐾"
+        ),
+        "wipes": (
+            "🧹 <b>Вайпы</b>\n\n"
+            "Вайпы - (от англ. wipe — «стереть», «очистить»)\n\n"
+            "Вайпы (очистка серверов) нужна для баланса между новичками и долгими игроками. "
+            "В девятое число каждого месяца проходит опрос в новостном канале. После опроса решается будет ли сброс в этом месяце всех очков или нет."
+        ),
+        "badges": (
+            "🏅 <b>Значки</b>\n\n"
+            "Наверняка вы замечали в лидерах какие-то значки после никнейма. Что они значат?\n\n"
+            "😎 - администрация бота (данный значок есть только у владельца бота)\n\n"
+            "🚫 - блокировка (человек заблокирован в боте и не может ничего в нём делать)"
+        ),
+    }
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Основа", callback_data="help:base"), InlineKeyboardButton(text="🧹 Вайпы", callback_data="help:wipes")],
+        [InlineKeyboardButton(text="🏅 Значки", callback_data="help:badges")],
+    ]) if section == "help" else InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="help")]])
+    text = texts.get(section, texts["help"])
+    photo = "/app/data/maskot.jpeg"
+    if section == "help" and os.path.exists(photo):
+        from aiogram.types import FSInputFile
+        if isinstance(target, Message):
+            await target.answer_photo(FSInputFile(photo), caption=text, reply_markup=markup)
+        elif target.message.photo:
+            await target.message.edit_caption(caption=text, reply_markup=markup)
+        else:
+            await target.message.delete()
+            await target.message.answer_photo(FSInputFile(photo), caption=text, reply_markup=markup)
+    elif isinstance(target, Message):
+        await target.answer(text, reply_markup=markup)
+    else:
+        await target.message.edit_text(text, reply_markup=markup)
 
-    # Атомарная проверка и выдача награды защищает от двойного начисления
-    # при почти одновременных запросах.
-    cursor = db.execute(
-        """
-        UPDATE users
-        SET points = points + ?,
-            last_claim = ?
-        WHERE user_id = ?
-          AND last_claim <= ?
-          AND banned = 0
-        """,
-        (REWARD, now, user_id, now - COOLDOWN),
-    )
-    db.commit()
-
-    if cursor.rowcount == 0:
-        row = get_user(user_id)
-        remaining = get_remaining(row["last_claim"]) if row else COOLDOWN
-
-        await message.edit_text(
-            "⏳ Награду нельзя забрать сейчас!\n"
-            f"Попробуйте через {format_remaining(remaining)} 🕐",
-            reply_markup=main_inline_keyboard(user_id),
-        )
-        return
-
-    await message.edit_text(
-        f"🎁 Вы получили {REWARD} очков!\n"
-        "Возвращайтесь через 1 час! ⏰",
-        reply_markup=main_inline_keyboard(user_id),
-    )
-
-
-@dp.callback_query(F.data == "main_profile")
-async def profile_callback(callback) -> None:
-    user = callback.from_user
-    message = callback.message
-    if user is None or message is None:
-        return
-    await callback.answer()
-    if not await check_access(message):
-        return
-    row = get_user(user.id)
+async def build_profile_text(user_id: int) -> str | None:
+    row = get_user(user_id)
     if row is None:
-        return
+        return None
     rank = get_rank(row["user_id"])
-    await message.edit_text(
+    remaining = get_remaining(row["last_claim"])
+    timer = "Можно забрать сейчас 🎁" if remaining == 0 else f"До следующего получения: {format_remaining(remaining)} ⏰"
+    return (
         "👤 <b>Ваш профиль:</b>\n"
         f"Юзернейм - {username_text(row)}\n"
         f"Очки - {row['points']} 💰\n"
-        f"Место в топе - {rank} 🏆",
-        reply_markup=back_main_keyboard(),
+        f"Место в топе - {rank} 🏆\n"
+        f"{timer}"
     )
 
-
-def back_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]]
-    )
-
-
-@dp.callback_query(F.data == "main_news")
-async def news_callback(callback) -> None:
-    user = callback.from_user
-    message = callback.message
-    if user is None or message is None:
-        return
-    await callback.answer()
+async def claim_action(message: Message, user_id: int) -> None:
     if not await check_access(message):
         return
-    await message.edit_text(
-        "📰 <b>Новости</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📰 Открыть новостной канал", url="https://t.me/points_collector_channel")],
-            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")],
-        ]),
+    now = int(time.time())
+    cursor = db.execute(
+        """UPDATE users SET points = points + ?, last_claim = ?
+           WHERE user_id = ? AND last_claim <= ? AND banned = 0 AND is_bot = 0""",
+        (REWARD, now, user_id, now - COOLDOWN),
     )
+    db.commit()
+    if cursor.rowcount == 0:
+        row = get_user(user_id)
+        remaining = get_remaining(row["last_claim"]) if row else COOLDOWN
+        await message.answer(f"⏳ Награду пока нельзя забрать!\nПопробуйте через {format_remaining(remaining)} 🕐", reply_markup=main_keyboard())
+        return
+    await message.answer(f"🎁 Вы получили {REWARD} очков!\nСледующее получение будет доступно через 1 час ⏰", reply_markup=main_keyboard())
 
+@dp.message(F.text == "🎁 Получить очки")
+async def owner_claim(message: Message) -> None:
+    if message.from_user and message.from_user.id == OWNER_ID:
+        await claim_action(message, OWNER_ID)
 
-@dp.callback_query(F.data == "main_leaders")
+@dp.callback_query(F.data == "claim")
+async def claim_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None or callback.message.chat.type != "private":
+        await callback.answer()
+        return
+    await callback.answer()
+    await claim_action(callback.message, callback.from_user.id)
+
+@dp.callback_query(F.data == "profile")
+async def profile_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    if not await check_access(callback.message):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    text = await build_profile_text(user_id)
+    if text is not None:
+        await replace_callback_message(callback, text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить", callback_data="profile")], [InlineKeyboardButton(text="⬅️ В меню", callback_data="menu")]]))
+    await callback.answer()
+
+@dp.callback_query(F.data == "leaders")
 async def leaders_callback(callback) -> None:
-    user = callback.from_user
-    message = callback.message
-    if user is None or message is None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
         return
-    await callback.answer()
-    if not await check_access(message):
+    if not await check_access(callback.message):
+        await callback.answer("Недоступно", show_alert=True)
         return
-    rows = db.execute("SELECT * FROM users ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
-    places = ["👑", "2 место", "3 место", "4 место", "5 место"]
+    rows = db.execute("SELECT * FROM users WHERE is_bot = 0 ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
     text = "🏆 <b>Лидеры</b>\n\n"
+    places = ["👑", "2 место", "3 место", "4 место", "5 место"]
     for index, row in enumerate(rows):
         text += f"{places[index]}: {username_text(row)} - {row['points']} очков\n"
     if not rows:
         text += "Пока здесь никого нет 😴\n"
-    await message.edit_text(text, reply_markup=back_main_keyboard())
-
-
-@dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback) -> None:
-    user = callback.from_user
-    message = callback.message
-    if user is None or message is None:
-        return
+    await replace_callback_message(callback, text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ В меню", callback_data="menu")]]))
     await callback.answer()
-    if not await check_access(message):
+
+@dp.callback_query(F.data == "news")
+async def news_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
         return
-    await message.edit_text(
+    if not await check_access(callback.message):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await replace_callback_message(callback, "📰 <b>Новости</b>", InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📰 Открыть новостной канал", url="https://t.me/points_collector_channel")], [InlineKeyboardButton(text="⬅️ В меню", callback_data="menu")]]))
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu")
+async def menu_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+    if not await check_access(callback.message):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await replace_callback_message(
+        callback,
         "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
         "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
         "😎 Автор: @emptinessdurka",
-        reply_markup=main_inline_keyboard(user.id),
+        main_keyboard(),
     )
+    await callback.answer()
 
-
-
-def help_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📖 Основа", callback_data="help_base"),
-                InlineKeyboardButton(text="🧹 Вайпы", callback_data="help_wipes"),
-            ],
-            [
-                InlineKeyboardButton(text="🏅 Значки", callback_data="help_badges"),
-            ],
-        ]
-    )
-
-
-def help_back_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="help_home")]
-        ]
-    )
-
-
-HELP_HOME = (
-    "Привет, я Уголёк! 🐾\n"
-    "Готова рассказать тебе всё ✨"
-)
-
-HELP_BASE = (
-    "📖 <b>Основа</b>\n\n"
-    "В меню есть кнопка «🎁 Получить очки». Нажимай на неё и получай "
-    "10 очков каждый час! ⏰\n\n"
-    "В «👤 Профиле» ты можешь увидеть количество своих очков и место "
-    "в таблице лидеров. 🏆\n\n"
-    "В «🏆 Лидерах» ты можешь отслеживать лучших игроков.\n\n"
-    "В «📰 Новостях» ты найдёшь ссылку для перехода в новостной канал "
-    "бота. Там вся полезная информация и опросы. 💌"
-)
-
-HELP_WIPES = (
-    "🧹 <b>Вайпы</b>\n\n"
-    "Вайп от английского wipe означает «стереть» или «очистить».\n\n"
-    "Вайпы, то есть очистка очков, нужны для баланса между новичками "
-    "и теми, кто играет давно. ⚖️\n\n"
-    "Девятого числа каждого месяца в новостном канале проходит опрос. "
-    "После него решается, будет ли в этом месяце сброс всех очков или нет. 📊"
-)
-
-HELP_BADGES = (
-    "🏅 <b>Значки</b>\n\n"
-    "Наверняка ты замечал(а) в лидерах какие-то значки после никнейма. "
-    "Вот что они значат:\n\n"
-    "😎 - администрация бота. Этот значок есть только у владельца бота.\n\n"
-    "🚫 - блокировка. Человек заблокирован в боте и не может ничего в нём делать."
-)
-
-
-async def send_help(message: Message) -> None:
-    if not await check_access(message):
+@dp.callback_query(F.data == "help")
+async def help_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
         return
-
-    if os.path.exists(MASCOT_PATH):
-        await message.answer_photo(
-            photo=FSInputFile(MASCOT_PATH),
-            caption=HELP_HOME,
-            reply_markup=help_keyboard(),
-        )
-    else:
-        await message.answer(
-            HELP_HOME + "\n\n💡 Файл maskot.jpeg пока не найден, но раздел помощи уже работает.",
-            reply_markup=help_keyboard(),
-        )
-
-
-async def edit_help_message(callback, text: str, markup: InlineKeyboardMarkup) -> None:
-    """Меняет текст помощи независимо от того, отправлена она с фото или без него."""
-    message = callback.message
-    if message is None:
-        return
-
-    if message.photo:
-        await message.edit_caption(caption=text, reply_markup=markup)
-    else:
-        await message.edit_text(text, reply_markup=markup)
-
-
-@dp.message(Command("help"))
-async def help_command(message: Message) -> None:
-    await send_help(message)
-
-
-@dp.callback_query(F.data == "main_help")
-async def help_button(callback) -> None:
-    message = callback.message
-    if message is None:
-        return
-    await callback.answer()
-    await send_help(message)
-
-
-@dp.callback_query(F.data == "help_home")
-async def help_home_callback(callback) -> None:
-    await callback.answer()
-    await edit_help_message(callback, HELP_HOME, help_keyboard())
-
-
-@dp.callback_query(F.data == "help_base")
-async def help_base_callback(callback) -> None:
-    await callback.answer()
-    await edit_help_message(callback, HELP_BASE, help_back_keyboard())
-
-
-@dp.callback_query(F.data == "help_wipes")
-async def help_wipes_callback(callback) -> None:
-    await callback.answer()
-    await edit_help_message(callback, HELP_WIPES, help_back_keyboard())
-
-
-@dp.callback_query(F.data == "help_badges")
-async def help_badges_callback(callback) -> None:
-    await callback.answer()
-    await edit_help_message(callback, HELP_BADGES, help_back_keyboard())
-
-
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel_callback(callback) -> None:
-    if callback.from_user is None or callback.from_user.id != OWNER_ID or callback.message is None:
+    if not await check_access(callback.message):
         await callback.answer("Недоступно", show_alert=True)
         return
+    await send_help(callback, "help")
     await callback.answer()
-    admin_states.pop(OWNER_ID, None)
-    await callback.message.answer("⚙️ <b>Админ-панель</b>", reply_markup=admin_keyboard())
+
+@dp.callback_query(F.data.startswith("help:"))
+async def help_section_callback(callback) -> None:
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+    if not await check_access(callback.message):
+        await callback.answer("Недоступно", show_alert=True)
+        return
+    await send_help(callback, callback.data.split(":", 1)[1])
+    await callback.answer()
+
+@dp.message(F.text == "👤 Профиль")
+async def owner_profile(message: Message) -> None:
+    if message.from_user and message.from_user.id == OWNER_ID and await check_access(message):
+        text = await build_profile_text(OWNER_ID)
+        if text:
+            await message.answer(text, reply_markup=owner_menu_keyboard())
+
+@dp.message(F.text == "🏆 Лидеры")
+async def owner_leaders(message: Message) -> None:
+    if message.from_user and message.from_user.id == OWNER_ID:
+        rows = db.execute("SELECT * FROM users WHERE is_bot = 0 ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
+        text = "🏆 <b>Лидеры</b>\n\n"
+        places = ["👑", "2 место", "3 место", "4 место", "5 место"]
+        for index, row in enumerate(rows):
+            text += f"{places[index]}: {username_text(row)} - {row['points']} очков\n"
+        await message.answer(text, reply_markup=owner_menu_keyboard())
+
+@dp.message(F.text == "📰 Новости")
+async def owner_news(message: Message) -> None:
+    if message.from_user and message.from_user.id == OWNER_ID:
+        await message.answer("📰 <b>Новости</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📰 Открыть новостной канал", url="https://t.me/points_collector_channel")]]))
+
+
 
 
 @dp.message(F.text == "⚙️ Админ-панель")
@@ -623,28 +585,20 @@ async def clear_all_start(message: Message) -> None:
 
     await message.answer(
         "⚠️ Сбросить очки у всех пользователей?\n\n"
-        "Пользователи и их аккаунты останутся на месте.\n"
         "Напишите ДА для продолжения.",
         reply_markup=cancel_keyboard(),
     )
-
 
 
 @dp.message(F.text == "🗑️ Очистить всех пользователей")
 async def clear_all_users_start(message: Message) -> None:
     if not is_owner(message):
         return
-
-    admin_states[OWNER_ID] = "delete_users_first"
-
+    admin_states[OWNER_ID] = "delete_all_first"
     await message.answer(
-        "⚠️ <b>Удаление всех пользователей</b>\n\n"
-        "Все аккаунты пользователей будут удалены из базы, вместе с очками, "
-        "таймерами и блокировками.\n\n"
-        "Напишите ДА для продолжения.",
+        "⚠️ Это полностью удалит все аккаунты пользователей из базы.\n\nНапишите УДАЛИТЬ для продолжения.",
         reply_markup=cancel_keyboard(),
     )
-
 
 @dp.message(F.text == "❌ Отмена")
 async def cancel(message: Message) -> None:
@@ -652,6 +606,7 @@ async def cancel(message: Message) -> None:
         return
 
     admin_states.pop(OWNER_ID, None)
+    profile_states.pop(message.from_user.id, None)
 
     await message.answer(
         "❌ Действие отменено.",
@@ -668,7 +623,7 @@ async def back_to_menu(message: Message) -> None:
 
     await message.answer(
         "🏠 Главное меню",
-        reply_markup=main_inline_keyboard(OWNER_ID),
+        reply_markup=owner_menu_keyboard(),
     )
 
 
@@ -833,43 +788,14 @@ async def admin_input(message: Message) -> None:
         )
         return
 
-    if state == "delete_users_first":
-        if text.upper() != "ДА":
-            await message.answer(
-                "❌ Напишите ДА для продолжения.",
-                reply_markup=cancel_keyboard(),
-            )
-            return
-
-        admin_states[OWNER_ID] = "delete_users_second"
-
-        await message.answer(
-            "⚠️ Последнее подтверждение.\n\n"
-            "Будут удалены все аккаунты пользователей. "
-            "После этого счётчик пользователей станет 0.\n\n"
-            "Напишите УДАЛИТЬ для подтверждения.",
-            reply_markup=cancel_keyboard(),
-        )
-        return
-
-    if state == "delete_users_second":
+    if state == "delete_all_first":
         if text.upper() != "УДАЛИТЬ":
-            await message.answer(
-                "❌ Напишите УДАЛИТЬ для подтверждения.",
-                reply_markup=cancel_keyboard(),
-            )
+            await message.answer("❌ Напишите УДАЛИТЬ для подтверждения.", reply_markup=cancel_keyboard())
             return
-
         db.execute("DELETE FROM users")
         db.commit()
         admin_states.pop(OWNER_ID, None)
-
-        await message.answer(
-            "🗑️ Все аккаунты пользователей удалены.\n"
-            "👥 Сейчас в базе: 0 пользователей.\n\n"
-            "Новый пользователь снова появится в базе после первого взаимодействия с ботом.",
-            reply_markup=admin_keyboard(),
-        )
+        await message.answer("🗑️ Все пользовательские аккаунты удалены из базы.", reply_markup=admin_keyboard())
         return
 
     if state == "wipe_first":
@@ -884,8 +810,7 @@ async def admin_input(message: Message) -> None:
 
         await message.answer(
             "⚠️ Последнее подтверждение.\n\n"
-            "Очки и таймеры будут сброшены у всех пользователей.\n"
-            "Напишите УДАЛИТЬ для подтверждения.",
+            "Напишите УДАЛИТЬ для сброса очков.",
             reply_markup=cancel_keyboard(),
         )
         return
@@ -898,20 +823,13 @@ async def admin_input(message: Message) -> None:
             )
             return
 
-        # Сбрасываем только игровые данные, но сохраняем все аккаунты.
-        db.execute(
-            """
-            UPDATE users
-            SET points = 0,
-                last_claim = 0
-            """
-        )
+        # Обычный вайп не удаляет аккаунты: сбрасываются только очки и таймеры.
+        db.execute("UPDATE users SET points = 0, last_claim = 0")
         db.commit()
         admin_states.pop(OWNER_ID, None)
 
         await message.answer(
-            "💥 Все очки и таймеры сброшены.\n"
-            "👥 Пользователи и их аккаунты сохранены.",
+            "💥 Очки и таймеры всех пользователей сброшены. Аккаунты сохранены.",
             reply_markup=admin_keyboard(),
         )
 
