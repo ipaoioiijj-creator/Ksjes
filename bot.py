@@ -28,6 +28,10 @@ DB_FILE = "/app/data/bot.db"
 REWARD = 10
 COOLDOWN = 3600
 MASKOT_FILE = Path("/app/data/maskot.jpeg")
+if not MASKOT_FILE.exists():
+    local_maskot = Path("maskot.jpeg")
+    if local_maskot.exists():
+        MASKOT_FILE = local_maskot
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN. Установите переменную окружения BOT_TOKEN.")
@@ -229,7 +233,7 @@ async def help_command(message: Message) -> None:
 
 
 async def send_help(message: Message):
-    caption = "Привет, я Уголёк! 🐾\nГотова рассказать тебе всё 💜"
+    caption = "Привет, я Уголёк! Готова рассказать тебе всё"
     if MASKOT_FILE.exists():
         await message.answer_photo(
             FSInputFile(MASKOT_FILE),
@@ -242,9 +246,15 @@ async def send_help(message: Message):
 
 async def edit_help(callback: CallbackQuery, text: str):
     if callback.message.photo:
-        await callback.message.edit_caption(caption=text, reply_markup=help_keyboard("section"))
+        await callback.message.edit_caption(
+            caption=text,
+            reply_markup=help_keyboard("section"),
+        )
     else:
-        await callback.message.edit_text(text, reply_markup=help_keyboard("section"))
+        await callback.message.edit_text(
+            text,
+            reply_markup=help_keyboard("section"),
+        )
 
 
 @dp.callback_query(F.data == "help")
@@ -252,16 +262,22 @@ async def help_callback(callback: CallbackQuery):
     if not await check_access_user(callback.from_user):
         await callback.answer()
         return
+
     await callback.answer()
-    # Для уже существующего текстового/фото сообщения просто открываем выбор раздела.
+
+    # Если помощь открыта из текстового сообщения меню, заменяем его
+    # на сообщение с маскотом. Если маскот недоступен, оставляем текст.
     if callback.message.photo:
         await callback.message.edit_caption(
-            caption="Привет, я Уголёк! 🐾\nГотова рассказать тебе всё 💜",
+            caption="Привет, я Уголёк! Готова рассказать тебе всё",
             reply_markup=help_keyboard(),
         )
+    elif MASKOT_FILE.exists():
+        await callback.message.delete()
+        await send_help(callback.message)
     else:
         await callback.message.edit_text(
-            "Привет, я Уголёк! 🐾\nГотова рассказать тебе всё 💜",
+            "Привет, я Уголёк! Готова рассказать тебе всё",
             reply_markup=help_keyboard(),
         )
 
@@ -271,11 +287,10 @@ async def help_base(callback: CallbackQuery):
     await callback.answer()
     await edit_help(
         callback,
-        "📖 <b>Основа</b>\n\n"
-        "В меню есть кнопка «🎁 Получить очки». Нажимай на неё и получай 10 очков каждый час! "
+        "В меню есть кнопка «🎁Получить очки». Нажимай на неё и получай 10 очков каждый час! "
         "В «Профиле» ты можешь увидеть кол-во своих очков и место в таблице лидеров. "
         "В «Лидерах» ты можешь отслеживать лучших игроков. В «Новостях» ты найдёшь ссылку "
-        "для перехода в новостной канал бота, там вся полезная информация и опросы 💜"
+        "для перехода в новостной канал бота, там вся полезная информация и опросы"
     )
 
 
@@ -284,7 +299,6 @@ async def help_wipes(callback: CallbackQuery):
     await callback.answer()
     await edit_help(
         callback,
-        "🧹 <b>Вайпы</b>\n\n"
         "Вайпы - (от англ. wipe — «стереть», «очистить»)\n\n"
         "Вайпы (очистка серверов) нужна для баланса между новичками и долгими игроками. "
         "В девятое число каждого месяца проходит опрос в новостном канале. После опроса "
@@ -297,7 +311,6 @@ async def help_badges(callback: CallbackQuery):
     await callback.answer()
     await edit_help(
         callback,
-        "🏅 <b>Значки</b>\n\n"
         "Наверняка вы замечали в лидерах какие-то значки после никнейма. Что они значат?\n\n"
         "😎 - администрация бота (данный значок есть только у владельца бота)\n\n"
         "🚫 - блокировка (человек заблокирован в боте и не может ничего в нём делать)"
