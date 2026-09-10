@@ -2,6 +2,8 @@ import asyncio
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from html import escape
 from pathlib import Path
 
@@ -52,6 +54,8 @@ db.execute(
     """
 )
 db.execute("CREATE INDEX IF NOT EXISTS idx_users_points ON users(points DESC, user_id ASC)")
+db.execute("""CREATE TABLE IF NOT EXISTS daily_points (period TEXT NOT NULL, user_id INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, user_id))""")
+db.execute("""CREATE TABLE IF NOT EXISTS weekly_points (period TEXT NOT NULL, user_id INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, user_id))""")
 db.commit()
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -59,6 +63,8 @@ dp = Dispatcher()
 
 # Состояния нужны только для админских текстовых действий.
 admin_states: dict[int, str] = {}
+profile_search_states: set[int] = set()
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 def ensure_user(user_id: int, username: str | None) -> None:
@@ -127,6 +133,38 @@ def get_rank(user_id: int):
     ).fetchone()
     return row["rank"] if row else None
 
+
+def moscow_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone(MOSCOW_TZ)
+
+def daily_period() -> str:
+    return moscow_now().strftime("%Y-%m-%d")
+
+def weekly_period() -> str:
+    now = moscow_now()
+    sunday = now - timedelta(days=(now.weekday() + 1) % 7)
+    return sunday.strftime("%Y-%m-%d")
+
+def add_period_points(user_id: int, points: int) -> None:
+    db.execute("INSERT INTO daily_points(period, user_id, points) VALUES (?, ?, ?) ON CONFLICT(period, user_id) DO UPDATE SET points = points + excluded.points", (daily_period(), user_id, points))
+    db.execute("INSERT INTO weekly_points(period, user_id, points) VALUES (?, ?, ?) ON CONFLICT(period, user_id) DO UPDATE SET points = points + excluded.points", (weekly_period(), user_id, points))
+    db.commit()
+
+def get_period_leaders(table: str, period: str):
+    return db.execute(f"SELECT u.*, p.points AS period_points FROM {table} p JOIN users u ON u.user_id = p.user_id WHERE p.period = ? AND u.banned = 0 ORDER BY p.points DESC, u.user_id ASC LIMIT 5", (period,)).fetchall()
+
+def leaders_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Ежедневный топ 5", callback_data="leaders_daily"), InlineKeyboardButton(text="🗓️ Еженедельный топ 5", callback_data="leaders_weekly")],
+        [InlineKeyboardButton(text="♾️ Постоянный топ 5", callback_data="leaders_all")],
+        [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
+    ])
+
+def profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Найти профиль", callback_data="profile_search")],
+        [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
+    ])
 
 def main_inline_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = [
@@ -338,6 +376,7 @@ async def claim_callback(callback: CallbackQuery):
         remaining = get_remaining(row["last_claim"]) if row else COOLDOWN
         await callback.answer(f"⏳ Попробуйте через {format_remaining(remaining)}", show_alert=True)
         return
+    add_period_points(user.id, REWARD)
     await callback.answer(f"🎁 Вы получили {REWARD} очков!", show_alert=True)
 
 
@@ -355,9 +394,7 @@ async def profile_callback(callback: CallbackQuery):
         f"Юзернейм - {username_text(row)}\n"
         f"Очки - {row['points']} 💰\n"
         f"Место в топе - {rank} 🏆",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")]]
-        ),
+        reply_markup=profile_keyboard(),
     )
 
 
@@ -385,22 +422,50 @@ async def leaders_callback(callback: CallbackQuery):
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
         return
-    rows = db.execute(
-        "SELECT * FROM users WHERE points >= 0 ORDER BY points DESC, user_id ASC LIMIT 5"
-    ).fetchall()
-    text = "🏆 <b>Лидеры</b>\n\n"
-    places = ["👑", "2 место", "3 место", "4 место", "5 место"]
-    for index, row in enumerate(rows):
-        text += f"{places[index]}: {username_text(row)} - {row['points']} очков\n"
-    if not rows:
-        text += "Пока здесь никого нет 😴\n"
     await callback.answer()
     await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")]]
-        ),
+        "🏆 <b>Лидеры</b>\n\nВыберите топ:\n\n"
+        "📅 Ежедневный — сброс в 00:00 по МСК.\n"
+        "🗓️ Еженедельный — сброс в воскресенье в 00:00 по МСК.\n"
+        "♾️ Постоянный — сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!",
+        reply_markup=leaders_keyboard(),
     )
+
+async def show_leaderboard(callback: CallbackQuery, kind: str):
+    if not await check_access_user(callback.from_user):
+        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
+        return
+    if kind == "daily":
+        rows = get_period_leaders("daily_points", daily_period())
+        title, footer = "📅 <b>Ежедневный топ 5</b>", "Сбрасывается ежедневно в 00:00 по МСК."
+    elif kind == "weekly":
+        rows = get_period_leaders("weekly_points", weekly_period())
+        title, footer = "🗓️ <b>Еженедельный топ 5</b>", "Сбрасывается каждое воскресенье в 00:00 по МСК."
+    else:
+        rows = db.execute("SELECT * FROM users WHERE points >= 0 AND banned = 0 ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
+        title, footer = "♾️ <b>Постоянный топ 5</b>", "Постоянный топ! Сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!"
+    places = ["👑", "🥈", "🥉", "4️⃣", "5️⃣"]
+    text = f"{title}\n\n"
+    for i, row in enumerate(rows):
+        points = row["period_points"] if kind in {"daily", "weekly"} else row["points"]
+        text += f"{places[i]}: {username_text(row)} — {points} очков\n"
+    if not rows:
+        text += "Пока здесь никого нет 😴\n"
+    text += f"\n<i>{footer}</i>"
+    await callback.answer()
+    await callback.message.edit_text(text, reply_markup=leaders_keyboard())
+
+@dp.callback_query(F.data == "leaders_daily")
+async def leaders_daily_callback(callback: CallbackQuery):
+    await show_leaderboard(callback, "daily")
+
+@dp.callback_query(F.data == "leaders_weekly")
+async def leaders_weekly_callback(callback: CallbackQuery):
+    await show_leaderboard(callback, "weekly")
+
+@dp.callback_query(F.data == "leaders_all")
+async def leaders_all_callback(callback: CallbackQuery):
+    await show_leaderboard(callback, "all")
 
 
 @dp.callback_query(F.data == "admin")
@@ -512,6 +577,17 @@ async def cancel(message: Message):
     await message.answer("❌ Действие отменено.", reply_markup=admin_keyboard())
 
 
+@dp.callback_query(F.data == "profile_search")
+async def profile_search_callback(callback: CallbackQuery):
+    user = callback.from_user
+    if not await check_access_user(user):
+        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
+        return
+    profile_search_states.add(user.id)
+    await callback.answer()
+    await callback.message.answer("🔎 <b>Поиск профиля</b>\n\nОтправьте юзернейм (@username) или ID пользователя.")
+
+
 @dp.message()
 async def admin_input(message: Message):
     # Игроки и любые их обычные сообщения здесь полностью игнорируются.
@@ -563,7 +639,9 @@ async def admin_input(message: Message):
             await message.answer(f"♻️ {username_text(row)} снова доступен.", reply_markup=admin_keyboard()); return
         if row["user_id"] == OWNER_ID:
             await message.answer("❌ Нельзя очистить профиль владельца этим действием.", reply_markup=cancel_keyboard()); return
-        db.execute("UPDATE users SET points = 0, last_claim = 0 WHERE user_id = ?", (row["user_id"],)); db.commit()
+        db.execute("UPDATE users SET points = 0, last_claim = 0 WHERE user_id = ?", (row["user_id"],))
+        db.execute("DELETE FROM daily_points WHERE user_id = ?", (row["user_id"],))
+        db.execute("DELETE FROM weekly_points WHERE user_id = ?", (row["user_id"],)); db.commit()
         admin_states.pop(OWNER_ID, None)
         await message.answer(f"🧹 Данные игрока {username_text(row)} очищены.", reply_markup=admin_keyboard()); return
 
@@ -571,6 +649,8 @@ async def admin_input(message: Message):
         if text.upper() != "ДА":
             await message.answer("❌ Напишите ДА для продолжения.", reply_markup=cancel_keyboard()); return
         db.execute("UPDATE users SET points = 0, last_claim = 0")
+        db.execute("DELETE FROM daily_points")
+        db.execute("DELETE FROM weekly_points")
         db.commit()
         admin_states.pop(OWNER_ID, None)
         await message.answer("💥 Очки и таймеры всех пользователей сброшены. Сами аккаунты сохранены.", reply_markup=admin_keyboard())
