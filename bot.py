@@ -64,6 +64,7 @@ dp = Dispatcher()
 # Состояния нужны только для админских текстовых действий.
 admin_states: dict[int, str] = {}
 profile_search_states: set[int] = set()
+main_menu_messages: dict[int, list[int]] = {}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -190,9 +191,9 @@ def get_period_leaders(table: str, period: str):
 
 def leaders_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 День · Топ 5", callback_data="leaders_daily"),
-         InlineKeyboardButton(text="🗓️ Неделя · Топ 5", callback_data="leaders_weekly")],
-        [InlineKeyboardButton(text="♾️ Постоянный · Топ 5", callback_data="leaders_all")],
+        [InlineKeyboardButton(text="📅 День", callback_data="leaders_daily"),
+         InlineKeyboardButton(text="🗓️ Неделя", callback_data="leaders_weekly")],
+        [InlineKeyboardButton(text="♾️ Постоянный", callback_data="leaders_all")],
         [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
     ])
 
@@ -276,18 +277,28 @@ async def check_access_user(user) -> bool:
     return not (row["banned"] and user.id != OWNER_ID)
 
 
+async def delete_main_menu_messages(user_id: int) -> None:
+    message_ids = main_menu_messages.pop(user_id, [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(user_id, message_id)
+        except Exception:
+            pass
+
+
 async def send_main_menu(message: Message, user_id: int, text: str | None = None):
-    # ReplyKeyboardRemove гарантированно убирает старое нижнее меню.
-    await message.answer(
-        text or "🏠 Главное меню",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await message.answer(
+    await delete_main_menu_messages(user_id)
+    # ReplyKeyboardRemove убирает старое нижнее меню. Сообщение «Главное меню»
+    # и само меню сохраняются как одна связанная группа и удаляются вместе.
+    menu_label = text or "🏠 Главное меню"
+    first = await message.answer(menu_label, reply_markup=ReplyKeyboardRemove())
+    second = await message.answer(
         "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
         "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
         "😎 Автор: @emptinessdurka",
         reply_markup=main_inline_keyboard(user_id),
     )
+    main_menu_messages[user_id] = [first.message_id, second.message_id]
 
 
 @dp.message(CommandStart())
@@ -333,6 +344,7 @@ async def edit_help(callback: CallbackQuery, text: str):
 
 @dp.callback_query(F.data == "help")
 async def help_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     if not await check_access_user(callback.from_user):
         await callback.answer()
         return
@@ -358,6 +370,7 @@ async def help_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "help_base")
 async def help_base(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     await callback.answer()
     await edit_help(
         callback,
@@ -370,10 +383,11 @@ async def help_base(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "help_wipes")
 async def help_wipes(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     await callback.answer()
     await edit_help(
         callback,
-        "Вайпы - (от англ. wipe — «стереть», «очистить»)\n\n"
+        "Вайпы - (от англ. wipe - «стереть», «очистить»)\n\n"
         "Вайпы (очистка серверов) нужна для баланса между новичками и долгими игроками. "
         "В девятое число каждого месяца проходит опрос в новостном канале. После опроса "
         "решается будет ли сброс в этом месяце всех очков или нет."
@@ -382,6 +396,7 @@ async def help_wipes(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "help_badges")
 async def help_badges(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     await callback.answer()
     await edit_help(
         callback,
@@ -393,6 +408,7 @@ async def help_badges(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "claim")
 async def claim_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     user = callback.from_user
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
@@ -418,6 +434,7 @@ async def claim_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "profile")
 async def profile_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     user = callback.from_user
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
@@ -436,6 +453,7 @@ async def profile_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "news")
 async def news_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     user = callback.from_user
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
@@ -454,6 +472,7 @@ async def news_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "leaders")
 async def leaders_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     user = callback.from_user
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
@@ -461,10 +480,10 @@ async def leaders_callback(callback: CallbackQuery):
     await callback.answer()
     await delete_callback_message(callback)
     await callback.message.answer(
-        "🏆 <b>Лидеры</b>\n\nВыберите топ:\n\n"
-        "📅 День — сброс в 00:00 по МСК.\n"
-        "🗓️ Неделя — сброс в воскресенье в 00:00 по МСК.\n"
-        "♾️ Постоянный — сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!",
+        "🏆 <b>Лидеры</b>\n\nВыберите раздел:\n\n"
+        "📅 День - сброс в 00:00 по МСК.\n"
+        "🗓️ Неделя - сброс в воскресенье в 00:00 по МСК.\n"
+        "♾️ Постоянный - сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!",
         reply_markup=leaders_keyboard(),
     )
 
@@ -474,18 +493,18 @@ async def show_leaderboard(callback: CallbackQuery, kind: str):
         return
     if kind == "daily":
         rows = get_period_leaders("daily_points", daily_period())
-        title, footer = "📅 <b>Ежедневный топ 5</b>", "Сбрасывается ежедневно в 00:00 по МСК."
+        title, footer = "📅 <b>Ежедневные лидеры</b>", "Сбрасывается ежедневно в 00:00 по МСК."
     elif kind == "weekly":
         rows = get_period_leaders("weekly_points", weekly_period())
-        title, footer = "🗓️ <b>Еженедельный топ 5</b>", "Сбрасывается каждое воскресенье в 00:00 по МСК."
+        title, footer = "🗓️ <b>Еженедельные лидеры</b>", "Сбрасывается каждое воскресенье в 00:00 по МСК."
     else:
         rows = db.execute("SELECT * FROM users WHERE points >= 0 AND banned = 0 ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
-        title, footer = "♾️ <b>Постоянный топ 5</b>", "Постоянный топ! Сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!"
+        title, footer = "♾️ <b>Постоянные лидеры</b>", "Постоянные лидеры! Сбрасываются ежемесячно в случае принятия решения в голосовании в нашем канале!"
     places = ["👑", "🥈", "🥉", "4️⃣", "5️⃣"]
     text = f"{title}\n\n"
     for i, row in enumerate(rows):
         points = row["period_points"] if kind in {"daily", "weekly"} else row["points"]
-        text += f"{places[i]}: {username_text(row)} — {points} очков\n"
+        text += f"{places[i]}: {username_text(row)} - {points} очков\n"
     if not rows:
         text += "Пока здесь никого нет 😴\n"
     text += f"\n<i>{footer}</i>"
@@ -508,6 +527,7 @@ async def leaders_all_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin")
 async def admin_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     if callback.from_user.id != OWNER_ID:
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
         return
@@ -530,13 +550,8 @@ async def back_menu(callback: CallbackQuery):
     profile_search_states.discard(user.id)
     await callback.answer()
     await delete_callback_message(callback)
-    await callback.message.answer("🏠 Главное меню", reply_markup=ReplyKeyboardRemove())
-    await callback.message.answer(
-        "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
-        "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
-        "😎 Автор: @emptinessdurka",
-        reply_markup=main_inline_keyboard(user.id),
-    )
+    await delete_main_menu_messages(user.id)
+    await send_main_menu(callback.message, user.id)
 
 
 # ===== Админка. Оставлена на ReplyKeyboard для удобства владельца. =====
@@ -619,6 +634,7 @@ async def cancel(message: Message):
 
 @dp.callback_query(F.data == "profile_search")
 async def profile_search_callback(callback: CallbackQuery):
+    await delete_main_menu_messages(callback.from_user.id)
     user = callback.from_user
     if not await check_access_user(user):
         await callback.answer("🚫 Доступ запрещён.", show_alert=True)
@@ -641,9 +657,9 @@ async def profile_search_cancel_callback(callback: CallbackQuery):
     if row:
         await callback.message.answer(
             "👤 <b>Ваш профиль:</b>\n"
-            f"Юзернейм — {username_text(row)}\n"
-            f"Очки — {row['points']} 💰\n"
-            f"Место в топе — {get_rank(row['user_id'])} 🏆",
+            f"Юзернейм - {username_text(row)}\n"
+            f"Очки - {row['points']} 💰\n"
+            f"Место в топе - {get_rank(row['user_id'])} 🏆",
             reply_markup=profile_keyboard(),
         )
 
@@ -674,11 +690,11 @@ async def profile_search_input(message: Message):
     status = "\n🚫 <b>Пользователь заблокирован.</b>" if row["banned"] else ""
     text = (
         "👤 <b>Профиль игрока</b>\n\n"
-        f"Никнейм — {username_text(row)}\n"
-        f"Очки — {row['points']} 💰\n"
-        f"Место в постоянном топе — {rank if rank else '—'} 🏆\n"
-        f"Очки за день — {daily_points} 📅\n"
-        f"Очки за неделю — {weekly_points} 🗓️"
+        f"Никнейм - {username_text(row)}\n"
+        f"Очки - {row['points']} 💰\n"
+        f"Место в постоянном топе - {rank if rank else '-'} 🏆\n"
+        f"Очки за день - {daily_points} 📅\n"
+        f"Очки за неделю - {weekly_points} 🗓️"
         f"{status}"
     )
     await message.answer(text, reply_markup=search_profile_keyboard())
