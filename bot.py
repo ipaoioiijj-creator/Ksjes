@@ -704,7 +704,7 @@ async def cancel(message: Message):
     await message.answer("❌ Действие отменено.", reply_markup=admin_keyboard())
 
 
-@dp.message(lambda message: message.from_user is not None and message.from_user.id in profile_search_states)
+@dp.message(F.text)
 async def profile_search_input(message: Message):
     user = message.from_user
     if user is None or user.id not in profile_search_states:
@@ -712,13 +712,26 @@ async def profile_search_input(message: Message):
     if not await check_access_user(user):
         profile_search_states.discard(user.id)
         return
-    row = find_user(message.text or "")
+
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("❌ Пользователь не найден.", reply_markup=search_prompt_keyboard())
+        return
+
+    row = find_user(query)
     if row is None:
         await message.answer("❌ Пользователь не найден.", reply_markup=search_prompt_keyboard())
         return
+
     profile_search_states.discard(user.id)
-    daily_row = db.execute("SELECT points FROM daily_points WHERE period = ? AND user_id = ?", (daily_period(), row["user_id"])).fetchone()
-    weekly_row = db.execute("SELECT points FROM weekly_points WHERE period = ? AND user_id = ?", (weekly_period(), row["user_id"])).fetchone()
+    daily_row = db.execute(
+        "SELECT points FROM daily_points WHERE period = ? AND user_id = ?",
+        (daily_period(), row["user_id"]),
+    ).fetchone()
+    weekly_row = db.execute(
+        "SELECT points FROM weekly_points WHERE period = ? AND user_id = ?",
+        (weekly_period(), row["user_id"]),
+    ).fetchone()
     daily_points = daily_row["points"] if daily_row else 0
     weekly_points = weekly_row["points"] if weekly_row else 0
     text = (
