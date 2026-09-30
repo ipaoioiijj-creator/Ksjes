@@ -118,7 +118,18 @@ CREATE TABLE IF NOT EXISTS stats_daily (
 CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);
 CREATE INDEX IF NOT EXISTS idx_users_daily ON users(daily_earned DESC);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+CREATE TABLE IF NOT EXISTS user_titles (
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (user_id, title)
+);
 """)
+db.commit()
+
+# Переносим уже выбранные титулы в список купленных.
+for _row in db.execute("SELECT user_id, title FROM users WHERE title != ''").fetchall():
+    db.execute("INSERT OR IGNORE INTO user_titles(user_id, title) VALUES(?, ?)", (_row['user_id'], _row['title']))
 db.commit()
 
 def now_ts():
@@ -156,7 +167,7 @@ def menu():
         keyboard=[
             [KeyboardButton(text="⛏ Спуститься в шахту")],
             [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Лидеры")],
-            [KeyboardButton(text="⛏ Апгрейд"), KeyboardButton(text="🛒 Магазин")],
+            [KeyboardButton(text="🔧 Апгрейд"), KeyboardButton(text="🛒 Магазин")],
             [KeyboardButton(text="❓ Помощь")],
         ],
         resize_keyboard=True
@@ -193,31 +204,31 @@ def upgrade_keyboard(current):
 
 def upgrade_confirm_keyboard(target):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подтвердить", callback_data=f"upgrade_confirm:{target}")],
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"upgrade_confirm:{target}")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="upgrade_back")]
     ])
 
 def shop_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ежедневка", callback_data="shop_daily")],
-        [InlineKeyboardButton(text="Титулы", callback_data="shop_titles")],
-        [InlineKeyboardButton(text="Донат", callback_data="shop_donate")]
+        [InlineKeyboardButton(text="🎁 Ежедневка", callback_data="shop_daily")],
+        [InlineKeyboardButton(text="🏷 Титулы", callback_data="shop_titles")],
+        [InlineKeyboardButton(text="💳 Донат", callback_data="shop_donate")]
     ])
 
 def donate_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Вип", callback_data="donate_vip")],
-        [InlineKeyboardButton(text="Осколки титула", callback_data="donate_shards")],
+        [InlineKeyboardButton(text="👑 VIP", callback_data="donate_vip")],
+        [InlineKeyboardButton(text="🔹 Осколки титула", callback_data="donate_shards")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
     ])
 
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Заблокировать пользователя", callback_data="admin_block")],
-        [InlineKeyboardButton(text="Черный список", callback_data="admin_blacklist")],
-        [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="Очистить пользователя", callback_data="admin_clear")],
-        [InlineKeyboardButton(text="Очистить всех", callback_data="admin_clear_all")],
+        [InlineKeyboardButton(text="🚫 Заблокировать пользователя", callback_data="admin_block")],
+        [InlineKeyboardButton(text="📋 Черный список", callback_data="admin_blacklist")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🗑 Очистить пользователя", callback_data="admin_clear")],
+        [InlineKeyboardButton(text="🗑 Очистить всех", callback_data="admin_clear_all")],
         [InlineKeyboardButton(text="Выдать VIP", callback_data="admin_vip")],
         [InlineKeyboardButton(text="Выдать ОТ", callback_data="admin_shards")],
         [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
@@ -290,7 +301,7 @@ def get_place(user_id, daily=False):
 def get_top(daily=False):
     field = "daily_earned" if daily else "balance"
     return db.execute(
-        f"SELECT user_id, username, {field} AS value, title, vip_until FROM users WHERE blocked=0 ORDER BY {field} DESC, user_id ASC LIMIT 5"
+        f"SELECT user_id, username, {field} AS value, title, vip_until, blocked FROM users WHERE blocked=0 ORDER BY {field} DESC, user_id ASC LIMIT 5"
     ).fetchall()
 
 def weighted_result(pickaxe):
@@ -626,7 +637,7 @@ async def leaders_menu(message: Message):
     lines.append("1 место - 350 ОТ\n2 место - 250 ОТ\n3 место - 200 ОТ\n4 место - 150 ОТ\n5 место - 50 ОТ")
     await message.answer("\n".join(lines))
 
-@dp.message(F.text.in_({"апгрейд", "Апгрейд", "⛏ Апгрейд"}))
+@dp.message(F.text.in_({"апгрейд", "Апгрейд", "⛏ Апгрейд", "🔧 Апгрейд"}))
 async def upgrade_menu(message: Message):
     row = await check_user_message(message)
     if not row:
@@ -728,7 +739,7 @@ async def shop_title(callback: CallbackQuery):
     await callback.message.edit_text(
         f"{title}\nЦена: {fmt_money(price)} ОТ\n\nКупить?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Купить", callback_data=f"buy_title:{title}")],
+            [InlineKeyboardButton(text="🛒 Купить", callback_data=f"buy_title:{title}")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_titles")]
         ])
     )
