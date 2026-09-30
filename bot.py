@@ -582,38 +582,47 @@ async def title_back(callback: CallbackQuery):
     await callback.answer()
     await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
 
-@dp.message(F.text.in_({"Лидеры", "апгрейд", "Апгрейд", "магазин", "Магазин"}))
-async def main_menu_sections(message: Message):
+async def check_user_message(message: Message):
     row = ensure_user(message.from_user)
-    if row["blocked"]:
+    return None if row["blocked"] else row
+
+@dp.message(F.text == "Лидеры")
+async def leaders_menu(message: Message):
+    row = await check_user_message(message)
+    if not row:
         return
-
-    action = (message.text or "").strip().casefold()
-
-    if action == "лидеры":
-        top = get_top(False)
-        daily = get_top(True)
-        lines = ["Постоянный топ:"]
+    top = get_top(False)
+    daily = get_top(True)
+    lines = ["Постоянный топ:"]
+    if top:
         for i, r in enumerate(top, 1):
             lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$")
-        lines.append("\nЕжедневный топ:")
+    else:
+        lines.append("Пока пусто.")
+    lines.append("\nЕжедневный топ:")
+    if daily:
         for i, r in enumerate(daily, 1):
             lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$")
-        lines.append(
-            "\nЕжедневный топ обновляется в 00:00 по МСК.\n"
-            "По итогам дня топ-5 получают 1.000 Осколков титула:\n"
-            "1 место — 350 ОТ\n2 место — 250 ОТ\n3 место — 200 ОТ\n"
-            "4 место — 150 ОТ\n5 место — 50 ОТ"
-        )
-        await message.answer("\n".join(lines))
-        return
+    else:
+        lines.append("Пока пусто.")
+    lines.append("\nЕжедневный топ обновляется в 00:00 по МСК.")
+    lines.append("По итогам дня топ-5 получают 1.000 Осколков титула:")
+    lines.append("1 место — 350 ОТ\n2 место — 250 ОТ\n3 место — 200 ОТ\n4 место — 150 ОТ\n5 место — 50 ОТ")
+    await message.answer("\n".join(lines))
 
-    if action == "апгрейд":
-        await show_upgrade(message.bot, message.chat.id, row)
+@dp.message(F.text.in_({"апгрейд", "Апгрейд"}))
+async def upgrade_menu(message: Message):
+    row = await check_user_message(message)
+    if not row:
         return
+    await show_upgrade(message.bot, message.chat.id, row)
 
-    if action == "магазин":
-        await message.answer("Магазин:", reply_markup=shop_keyboard())
+@dp.message(F.text.in_({"магазин", "Магазин"}))
+async def shop_menu(message: Message):
+    row = await check_user_message(message)
+    if not row:
+        return
+    await message.answer("Магазин:", reply_markup=shop_keyboard())
 
 @dp.callback_query(F.data.startswith("upgrade:"))
 async def upgrade_action(callback: CallbackQuery):
@@ -808,7 +817,7 @@ async def help_button(message: Message):
     row = ensure_user(message.from_user)
     if not row["blocked"]:
         await message.answer("Помощь пока недоступна.")
-@dp.message(F.text.startswith("/admin"))
+@dp.message(F.text.in_({"/admin", "/админка"}))
 async def admin(message: Message):
     if not is_admin(message.from_user.id):
         return
