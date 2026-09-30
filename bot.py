@@ -125,6 +125,9 @@ def today():
 def fmt_money(value):
     return f"{value:,}".replace(",", ".")
 
+def registration_date(timestamp):
+    return datetime.fromtimestamp(timestamp, MSK).strftime("%d.%m.%Y %H:%M:%S")
+
 def ensure_user(user):
     ts = now_ts()
     username = user.username or ""
@@ -249,7 +252,8 @@ def profile_text(row):
         f"Место в топе: {place}\n"
         f"Ежедневный топ: {daily_place}\n"
         f"Вип-статус: {vip}\n"
-        f"Титульный значок: {title}"
+        f"Титульный значок: {title}\n"
+        f"Дата регистрации: {registration_date(row['created_at'])}"
     )
 
 def get_place(user_id, daily=False):
@@ -314,14 +318,17 @@ async def profile_message(bot, chat_id, target_id):
     if not row:
         return False
     text = profile_text(row)
-    photos = await bot.get_user_profile_photos(target_id, limit=1)
-    if photos.total_count:
-        await bot.send_photo(
-            chat_id, photos.photos[0][-1].file_id,
-            caption=text, reply_markup=profile_keyboard()
-        )
-    else:
-        await bot.send_message(chat_id, text, reply_markup=profile_keyboard())
+    try:
+        photos = await bot.get_user_profile_photos(target_id, limit=1)
+        if photos.total_count:
+            await bot.send_photo(
+                chat_id, photos.photos[0][-1].file_id,
+                caption=text, reply_markup=profile_keyboard()
+            )
+            return True
+    except Exception:
+        pass
+    await bot.send_message(chat_id, text, reply_markup=profile_keyboard())
     return True
 
 async def show_upgrade(bot, chat_id, row):
