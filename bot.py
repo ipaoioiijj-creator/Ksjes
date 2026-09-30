@@ -182,7 +182,8 @@ def mine_keyboard():
 def profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Другие профили", callback_data="profile_search")],
-        [InlineKeyboardButton(text="🏷 Изменить титульный значок", callback_data="change_title")]
+        [InlineKeyboardButton(text="🏷 Изменить титульный значок", callback_data="change_title")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="profile_back")]
     ])
 
 def cancel_keyboard():
@@ -212,7 +213,8 @@ def shop_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Ежедневка", callback_data="shop_daily")],
         [InlineKeyboardButton(text="🏷 Титулы", callback_data="shop_titles")],
-        [InlineKeyboardButton(text="💳 Донат", callback_data="shop_donate")]
+        [InlineKeyboardButton(text="💳 Донат", callback_data="shop_donate")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_main_back")]
     ])
 
 def donate_keyboard():
@@ -329,7 +331,11 @@ def update_stats(money=0, mines=0):
     db.commit()
 
 async def hide_menu(message):
-    await message.answer("⁣", reply_markup=ReplyKeyboardRemove())
+    msg = await message.answer("Меню скрыто.", reply_markup=ReplyKeyboardRemove())
+    try:
+        await msg.delete()
+    except TelegramBadRequest:
+        pass
 
 async def send_menu(message, welcome=False):
     if welcome and WELCOME_PHOTO:
@@ -546,6 +552,7 @@ async def profile_cancel(callback: CallbackQuery):
         await callback.message.delete()
     except TelegramBadRequest:
         pass
+    await send_menu(callback.message, welcome=False)
 
 @dp.message(F.text, lambda message: message.from_user.id in profile_search_users)
 async def profile_search_handler(message: Message):
@@ -569,6 +576,15 @@ async def profile_search_handler(message: Message):
         return
     await profile_message(message.bot, message.chat.id, target["user_id"])
 
+@dp.callback_query(F.data == "profile_back")
+async def profile_back(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await send_menu(callback.message, welcome=False)
+
 @dp.callback_query(F.data == "change_title")
 async def change_title(callback: CallbackQuery):
     owned = db.execute("SELECT title FROM user_titles WHERE user_id=? ORDER BY title", (callback.from_user.id,)).fetchall()
@@ -579,7 +595,11 @@ async def change_title(callback: CallbackQuery):
     buttons.append([InlineKeyboardButton(text="❌ Снять значок", callback_data="title:remove")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="title_back")])
     await callback.answer()
-    await callback.message.edit_text(
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(
         "🏷 Выберите купленный титульный значок:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
@@ -695,7 +715,11 @@ async def upgrade_action(callback: CallbackQuery):
         text += "\nВремя ожидания после добычи: 3 минуты вместо 5.\n"
     text += "\nПодтвердить улучшение?"
     await callback.answer()
-    await callback.message.edit_text(text, reply_markup=upgrade_confirm_keyboard(target))
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(text, reply_markup=upgrade_confirm_keyboard(target))
 
 @dp.callback_query(F.data.startswith("upgrade_confirm:"))
 async def upgrade_confirm(callback: CallbackQuery):
@@ -713,11 +737,28 @@ async def upgrade_confirm(callback: CallbackQuery):
     db.execute("UPDATE users SET balance=balance-?, pickaxe=? WHERE user_id=?", (price, target, callback.from_user.id))
     db.commit()
     await callback.answer("Кирка улучшена.")
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await show_upgrade(callback.bot, callback.message.chat.id, db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone())
 
 @dp.callback_query(F.data == "upgrade_back")
 async def upgrade_back(callback: CallbackQuery):
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await send_menu(callback.message, welcome=False)
+
+@dp.callback_query(F.data == "shop_main_back")
+async def shop_main_back(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await send_menu(callback.message, welcome=False)
 
 @dp.callback_query(F.data == "shop_daily")
@@ -787,7 +828,12 @@ async def buy_title(callback: CallbackQuery):
     db.execute("INSERT INTO user_titles(user_id, title) VALUES(?, ?)", (callback.from_user.id, title))
     db.commit()
     await callback.answer("Титул куплен.")
-    await callback.message.edit_text(f"✅ Титул {title} куплен и установлен.\n\n🔹 Списано: {fmt_money(price)}")
+    await callback.message.edit_text(
+        f"✅ Титул {title} куплен и установлен.\n\n🔹 Списано: {fmt_money(price)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_titles")]
+        ])
+    )
 
 @dp.callback_query(F.data == "shop_back")
 async def shop_back(callback: CallbackQuery):
