@@ -274,15 +274,16 @@ def pickaxe_upgrade_text(row):
 
 def display_name(row):
     username = f"@{row['username']}" if row["username"] else str(row["user_id"])
-    if row["blocked"]:
-        return f"🚫 {username}"
+    prefix = ""
     if row["user_id"] == ADMIN_ID:
-        return f"😎 {username}"
+        prefix += "😎 "
     if row["vip_until"] > now_ts():
-        prefix = "👑 "
-    else:
-        prefix = ""
-    suffix = f" {row['title']}" if row["title"] else ""
+        prefix += "👑 "
+    suffix = ""
+    if row["blocked"]:
+        suffix += " 🚫"
+    if row["title"]:
+        suffix += f" {row['title']}"
     return f"{prefix}{username}{suffix}"
 
 def profile_text(row):
@@ -1245,7 +1246,12 @@ async def admin_input(message: Message):
             db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (until, target_id))
             db.commit()
             admin_target_states.pop(message.from_user.id, None)
-            await message.answer("VIP выдан.")
+            remaining_days = max(0, (until - now_ts() + 86399) // 86400)
+            await message.answer(f"👑 VIP выдан на +{value} дн.\nУ пользователя теперь примерно {remaining_days} дн. VIP.", reply_markup=admin_keyboard())
+            try:
+                await message.bot.send_message(target_id, f"👑 Вам выдан VIP на +{value} дн.\nVIP продлён и теперь действует ещё примерно {remaining_days} дн.")
+            except Exception:
+                pass
             return
 
         if action == "shards_amount":
@@ -1256,7 +1262,12 @@ async def admin_input(message: Message):
             db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (value, target_id))
             db.commit()
             admin_target_states.pop(message.from_user.id, None)
-            await message.answer("Осколки выданы.")
+            total_shards = db.execute("SELECT shards FROM users WHERE user_id=?", (target_id,)).fetchone()[0]
+            await message.answer(f"🔹 Выдано Осколков титула: +{value}\nТеперь на балансе: {total_shards} ОТ", reply_markup=admin_keyboard())
+            try:
+                await message.bot.send_message(target_id, f"🔹 Вам выдано Осколков титула: +{value}\nТеперь на балансе: {total_shards} ОТ")
+            except Exception:
+                pass
             return
 
     query = message.text.strip()
