@@ -12,8 +12,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove
+    Message, CallbackQuery, PreCheckoutQuery, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove, LabeledPrice
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN") or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -27,6 +27,15 @@ MSK = ZoneInfo("Europe/Moscow")
 WELCOME_PHOTO = "welcome.jpg"
 VIP_PHOTO = "vip.jpg"
 SHARDS_PHOTO = "shards.jpg"
+
+# Цены для реального запуска. Пока тестируем все товары за 1 ⭐.
+DONATE_REAL_PRICES = {
+    "vip": 25,
+    "shards_500": 35,
+    "shards_1000": 60,
+    "shards_5000": 250,
+}
+TEST_STARS_PRICE = 1
 PICKAXE_PHOTOS = {
     "обычная": "pickaxe_normal.jpg",
     "укреплённая": "pickaxe_reinforced.jpg",
@@ -124,6 +133,14 @@ CREATE TABLE IF NOT EXISTS user_titles (
     title TEXT NOT NULL,
     PRIMARY KEY (user_id, title)
 );
+
+CREATE TABLE IF NOT EXISTS star_payments (
+    telegram_payment_charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    product TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
 """)
 db.commit()
 
@@ -219,8 +236,10 @@ def shop_keyboard():
 
 def donate_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👑 VIP", callback_data="donate_vip")],
-        [InlineKeyboardButton(text="🔹 Осколки титула", callback_data="donate_shards")],
+        [InlineKeyboardButton(text="👑 VIP - 1 ⭐", callback_data="donate:vip")],
+        [InlineKeyboardButton(text="🔹 500 ОТ - 1 ⭐", callback_data="donate:shards_500")],
+        [InlineKeyboardButton(text="🔹 1.000 ОТ - 1 ⭐", callback_data="donate:shards_1000")],
+        [InlineKeyboardButton(text="🔹 5.000 ОТ - 1 ⭐", callback_data="donate:shards_5000")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
     ])
 
@@ -845,70 +864,121 @@ async def shop_donate(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("Донат:", reply_markup=donate_keyboard())
 
-@dp.callback_query(F.data == "donate_vip")
-async def donate_vip(callback: CallbackQuery):
-    text = (
-        "👑 VIP 35₽/мес:\n"
-        "Вип титул\n"
-        "2x ежедневки\n"
-        "250 ОТ сразу на баланс\n\n"
-        "Ссылка для оплаты -\n\n"
-        "После оплаты получение товара может осуществляться в течение 24 часов! "
-        "Товар возврату не подлежит!"
+DONATE_PRODUCTS = {
+    "vip": {
+        "title": "👑 VIP на месяц",
+        "description": "VIP на 30 дней. Включает VIP-статус, 2x ежедневку и 250 ОТ.",
+        "real_price": 25,
+        "photo": VIP_PHOTO,
+    },
+    "shards_500": {
+        "title": "🔹 500 ОТ",
+        "description": "500 Осколков титула.",
+        "real_price": 35,
+        "photo": SHARDS_PHOTO,
+    },
+    "shards_1000": {
+        "title": "🔹 1.000 ОТ",
+        "description": "1.000 Осколков титула.",
+        "real_price": 60,
+        "photo": SHARDS_PHOTO,
+    },
+    "shards_5000": {
+        "title": "🔹 5.000 ОТ",
+        "description": "5.000 Осколков титула.",
+        "real_price": 250,
+        "photo": SHARDS_PHOTO,
+    },
+}
+
+def donate_price(product):
+    return TEST_STARS_PRICE
+
+@dp.callback_query(F.data.startswith("donate:"))
+async def donate_product(callback: CallbackQuery):
+    product = callback.data.split(":", 1)[1]
+    item = DONATE_PRODUCTS.get(product)
+    if not item:
+        await callback.answer("Товар не найден.", show_alert=True)
+        return
+    row = db.execute("SELECT blocked FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    if not row or row["blocked"]:
+        await callback.answer("Вы заблокированы.", show_alert=True)
+        return
+
+    price = donate_price(product)
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+
+    if os.path.exists(item["photo"]):
+        try:
+            await callback.message.answer_photo(
+                FSInputFile(item["photo"]),
+                caption=f"{item['title']}\n\n{item['description']}\n\nТестовая цена: {price} ⭐"
+            )
+        except Exception:
+            pass
+
+    await callback.message.answer_invoice(
+        title=item["title"],
+        description=item["description"],
+        payload=f"deltamine:{product}",
+        currency="XTR",
+        prices=[LabeledPrice(label=item["title"], amount=price)],
+        provider_token="",
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_donate")]
-    ])
-    await callback.answer()
-    try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
-    if os.path.exists(VIP_PHOTO):
-        try:
-            await callback.message.answer_photo(FSInputFile(VIP_PHOTO), caption=text, reply_markup=keyboard)
-            return
-        except Exception:
-            pass
-    await callback.message.answer(text, reply_markup=keyboard)
 
-@dp.callback_query(F.data == "donate_shards")
-async def donate_shards(callback: CallbackQuery):
-    buttons = [
-        [InlineKeyboardButton(text="500 ОТ - 45₽", callback_data="pay:500")],
-        [InlineKeyboardButton(text="1.000 ОТ - 80₽", callback_data="pay:1000")],
-        [InlineKeyboardButton(text="5.000 ОТ - 300₽", callback_data="pay:5000")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_donate")]
-    ]
-    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.answer()
-    try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
-    if os.path.exists(SHARDS_PHOTO):
-        try:
-            await callback.message.answer_photo(FSInputFile(SHARDS_PHOTO), caption="🔹 Осколки титула:", reply_markup=markup)
-            return
-        except Exception:
-            pass
-    await callback.message.answer("🔹 Осколки титула:", reply_markup=markup)
+@dp.pre_checkout_query()
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    payload = pre_checkout_query.invoice_payload
+    if not payload.startswith("deltamine:"):
+        await pre_checkout_query.answer(ok=False, error_message="Товар не найден.")
+        return
+    product = payload.split(":", 1)[1]
+    if product not in DONATE_PRODUCTS:
+        await pre_checkout_query.answer(ok=False, error_message="Товар не найден.")
+        return
+    if pre_checkout_query.currency != "XTR" or pre_checkout_query.total_amount != TEST_STARS_PRICE:
+        await pre_checkout_query.answer(ok=False, error_message="Цена товара изменилась. Откройте оплату заново.")
+        return
+    await pre_checkout_query.answer(ok=True)
 
-@dp.callback_query(F.data.startswith("pay:"))
-async def pay(callback: CallbackQuery):
-    amount = callback.data.split(":", 1)[1]
-    labels = {"500": "Обычный товар", "1000": "Выгодный товар", "5000": "Почти даром"}
-    await callback.answer()
-    text = (f"🔹 {amount} ОТ:\n\n{labels[amount]}\n\n"
-            "Ссылка для оплаты -\n\n"
-            "После оплаты получение товара может осуществляться в течение 24 часов! "
-            "Товар возврату не подлежит!")
-    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="donate_shards")]])
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    if not payload.startswith("deltamine:"):
+        return
+    product = payload.split(":", 1)[1]
+    item = DONATE_PRODUCTS.get(product)
+    if not item or payment.currency != "XTR":
+        return
+
+    # Не выдаём товар повторно, даже если Telegram повторно доставит update.
     try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
-    await callback.message.answer(text, reply_markup=markup)
+        db.execute(
+            "INSERT INTO star_payments(telegram_payment_charge_id, user_id, product, amount, created_at) VALUES(?, ?, ?, ?, ?)",
+            (payment.telegram_payment_charge_id, message.from_user.id, product, payment.total_amount, now_ts())
+        )
+    except sqlite3.IntegrityError:
+        return
+
+    if product == "vip":
+        row = db.execute("SELECT vip_until FROM users WHERE user_id=?", (message.from_user.id,)).fetchone()
+        current = row["vip_until"] if row else 0
+        until = max(now_ts(), current) + 30 * 86400
+        db.execute("UPDATE users SET vip_until=?, shards=shards+250 WHERE user_id=?", (until, message.from_user.id))
+        result = "👑 VIP активирован на 30 дней.\n🔹 +250 ОТ"
+    else:
+        amounts = {"shards_500": 500, "shards_1000": 1000, "shards_5000": 5000}
+        amount = amounts[product]
+        db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (amount, message.from_user.id))
+        result = f"🔹 На баланс зачислено: {fmt_money(amount)} ОТ"
+    db.commit()
+    await message.answer(f"✅ Оплата прошла успешно!\n\n{result}")
 
 @dp.message(F.text.in_({"Помощь", "❓ Помощь"}))
 async def help_button(message: Message):
