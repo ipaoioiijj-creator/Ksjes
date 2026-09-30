@@ -1,4 +1,6 @@
 import asyncio
+import os
+import sys
 import random
 import sqlite3
 from datetime import datetime, timedelta
@@ -14,7 +16,9 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN") or (sys.argv[1] if len(sys.argv) > 1 else "")
+if not BOT_TOKEN:
+    raise RuntimeError("Не указан токен бота. Укажи переменную BOT_TOKEN на хостинге.")
 ADMIN_ID = 5134277438
 ADMIN_USERNAME = "@emptinessdurka"
 DB_FILE = "deltamine.db"
