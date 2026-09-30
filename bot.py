@@ -12,7 +12,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton,
+    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
 
@@ -197,7 +197,7 @@ def upgrade_keyboard(current):
     if idx < len(PICKAXE_ORDER) - 1:
         nxt = PICKAXE_ORDER[idx + 1]
         rows.append([InlineKeyboardButton(
-            text=f"🔧 Улучшить до {nxt}",
+            text=f"Улучшить до {nxt}",
             callback_data=f"upgrade:{nxt}"
         )])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="upgrade_back")])
@@ -223,6 +223,12 @@ def donate_keyboard():
         [InlineKeyboardButton(text="🔹 Осколки титула", callback_data="donate_shards")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
     ])
+
+async def hide_reply_keyboard(message):
+    try:
+        await message.answer(" ", reply_markup=ReplyKeyboardRemove())
+    except Exception:
+        pass
 
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -438,8 +444,8 @@ async def mine_menu(message: Message):
     row = ensure_user(message.from_user)
     if row["blocked"]:
         return
+    await hide_reply_keyboard(message)
     await message.answer("Шахта:", reply_markup=mine_keyboard())
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
 
 @dp.callback_query(F.data == "mine")
 async def mine(callback: CallbackQuery):
@@ -520,13 +526,17 @@ async def profile(message: Message):
     row = ensure_user(message.from_user)
     if row["blocked"]:
         return
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
+    await hide_reply_keyboard(message)
     await profile_message(message.bot, message.chat.id, message.from_user.id)
 
 @dp.callback_query(F.data == "profile_search")
 async def profile_search(callback: CallbackQuery):
     profile_search_users.add(callback.from_user.id)
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await callback.message.answer(
         "Введите @username или Telegram ID игрока для поиска профиля.",
         reply_markup=cancel_keyboard()
@@ -563,15 +573,6 @@ async def profile_search_handler(message: Message):
         return
     await profile_message(message.bot, message.chat.id, target["user_id"])
 
-@dp.callback_query(F.data == "profile_back")
-async def profile_back(callback: CallbackQuery):
-    await callback.answer()
-    try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
-    await send_menu(callback.message, welcome=False)
-
 @dp.callback_query(F.data == "change_title")
 async def change_title(callback: CallbackQuery):
     owned = db.execute("SELECT title FROM user_titles WHERE user_id=? ORDER BY title", (callback.from_user.id,)).fetchall()
@@ -582,7 +583,11 @@ async def change_title(callback: CallbackQuery):
     buttons.append([InlineKeyboardButton(text="❌ Снять значок", callback_data="title:remove")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="title_back")])
     await callback.answer()
-    await callback.message.edit_text(
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(
         "🏷 Выберите купленный титульный значок:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
@@ -622,6 +627,15 @@ async def title_back(callback: CallbackQuery):
         pass
     await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
 
+@dp.callback_query(F.data == "profile_back")
+async def profile_back(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await send_menu(callback.message, welcome=False)
+
 async def check_user_message(message: Message):
     row = ensure_user(message.from_user)
     return None if row["blocked"] else row
@@ -631,6 +645,7 @@ async def leaders_menu(message: Message):
     row = await check_user_message(message)
     if not row:
         return
+    await hide_reply_keyboard(message)
     top = get_top(False)
     daily = get_top(True)
     lines = ["Постоянный топ:"]
@@ -648,8 +663,9 @@ async def leaders_menu(message: Message):
     lines.append("\nЕжедневный топ обновляется в 00:00 по МСК.")
     lines.append("По итогам дня топ-5 получают 1.000 Осколков титула:")
     lines.append("1 место - 350 ОТ\n2 место - 250 ОТ\n3 место - 200 ОТ\n4 место - 150 ОТ\n5 место - 50 ОТ")
-    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="leaders_back")]]))
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
+    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="leaders_back")]
+    ]))
 
 @dp.callback_query(F.data == "leaders_back")
 async def leaders_back(callback: CallbackQuery):
@@ -665,7 +681,7 @@ async def upgrade_menu(message: Message):
     row = await check_user_message(message)
     if not row:
         return
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
+    await hide_reply_keyboard(message)
     await show_upgrade(message.bot, message.chat.id, row)
 
 @dp.message(F.text.in_({"магазин", "Магазин", "🛒 Магазин"}))
@@ -673,8 +689,8 @@ async def shop_menu(message: Message):
     row = await check_user_message(message)
     if not row:
         return
+    await hide_reply_keyboard(message)
     await message.answer("Магазин:", reply_markup=shop_keyboard())
-    await message.answer("", reply_markup=ReplyKeyboardRemove())
 
 @dp.callback_query(F.data.startswith("upgrade:"))
 async def upgrade_action(callback: CallbackQuery):
@@ -698,7 +714,11 @@ async def upgrade_action(callback: CallbackQuery):
         text += "\nВремя ожидания после добычи: 3 минуты вместо 5.\n"
     text += "\nПодтвердить улучшение?"
     await callback.answer()
-    await callback.message.edit_text(text, reply_markup=upgrade_confirm_keyboard(target))
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(text, reply_markup=upgrade_confirm_keyboard(target))
 
 @dp.callback_query(F.data.startswith("upgrade_confirm:"))
 async def upgrade_confirm(callback: CallbackQuery):
@@ -721,6 +741,10 @@ async def upgrade_confirm(callback: CallbackQuery):
 @dp.callback_query(F.data == "upgrade_back")
 async def upgrade_back(callback: CallbackQuery):
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await send_menu(callback.message, welcome=False)
 
 @dp.callback_query(F.data == "shop_daily")
@@ -792,6 +816,15 @@ async def buy_title(callback: CallbackQuery):
     await callback.answer("Титул куплен.")
     await callback.message.edit_text(f"✅ Титул {title} куплен и установлен.\n\n🔹 Списано: {fmt_money(price)}")
 
+@dp.callback_query(F.data == "shop_back")
+async def shop_back(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("Магазин:", reply_markup=shop_keyboard())
+
 @dp.callback_query(F.data == "shop_main_back")
 async def shop_main_back(callback: CallbackQuery):
     await callback.answer()
@@ -800,11 +833,6 @@ async def shop_main_back(callback: CallbackQuery):
     except TelegramBadRequest:
         pass
     await send_menu(callback.message, welcome=False)
-
-@dp.callback_query(F.data == "shop_back")
-async def shop_back(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_text("Магазин:", reply_markup=shop_keyboard())
 
 @dp.callback_query(F.data == "shop_donate")
 async def shop_donate(callback: CallbackQuery):
@@ -880,7 +908,8 @@ async def pay(callback: CallbackQuery):
 async def help_button(message: Message):
     row = ensure_user(message.from_user)
     if not row["blocked"]:
-        await message.answer("Помощь пока недоступна.", reply_markup=ReplyKeyboardRemove())
+        await hide_reply_keyboard(message)
+        await message.answer("Помощь пока недоступна.")
 @dp.message(F.text.in_({"/admin", "/админка"}))
 async def admin(message: Message):
     if not is_admin(message.from_user.id):
