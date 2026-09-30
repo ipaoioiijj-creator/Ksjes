@@ -792,8 +792,8 @@ async def shop_daily(callback: CallbackQuery):
     dollars = 100 * multiplier
     shards = 30 * multiplier
     db.execute(
-        "UPDATE users SET balance=balance+?, shards=shards+?, last_daily=? WHERE user_id=?",
-        (dollars, shards, d, callback.from_user.id)
+        "UPDATE users SET balance=balance+?, daily_earned=daily_earned+?, shards=shards+?, last_daily=? WHERE user_id=?",
+        (dollars, dollars, shards, d, callback.from_user.id)
     )
     db.commit()
     await callback.answer()
@@ -1131,7 +1131,7 @@ async def admin_actions(callback: CallbackQuery):
         await callback.message.edit_text(
             "Точно очистить данные всех пользователей?",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Да, очистить", callback_data="admin_confirm_clear_all")],
+                [InlineKeyboardButton(text="Да, очистить", callback_data="confirm_clear_all")],
                 [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
             ])
         )
@@ -1142,7 +1142,7 @@ async def admin_actions(callback: CallbackQuery):
         await callback.message.answer("Введите текст рассылки.")
         return
 
-@dp.callback_query(F.data == "admin_confirm_clear_all")
+@dp.callback_query(F.data == "confirm_clear_all")
 async def admin_confirm_clear_all(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
@@ -1150,6 +1150,7 @@ async def admin_confirm_clear_all(callback: CallbackQuery):
         UPDATE users SET balance=0, shards=0, ores_mined=0, daily_earned=0,
         total_mines=0, pickaxe='обычная', title='', vip_until=0, last_mine=0, last_daily=''
     """)
+    db.execute("DELETE FROM user_titles")
     db.commit()
     await callback.answer("Данные всех пользователей очищены.")
     await callback.message.edit_text("Данные всех пользователей очищены.", reply_markup=admin_keyboard())
@@ -1353,6 +1354,7 @@ async def confirm_clear(callback: CallbackQuery):
         total_mines=0, pickaxe='обычная', title='', vip_until=0, last_mine=0, last_daily=''
         WHERE user_id=?
     """, (target_id,))
+    db.execute("DELETE FROM user_titles WHERE user_id=?", (target_id,))
     db.commit()
     admin_states.pop(callback.from_user.id, None)
     admin_target_states.pop(callback.from_user.id, None)
