@@ -118,7 +118,14 @@ CREATE TABLE IF NOT EXISTS stats_daily (
 CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);
 CREATE INDEX IF NOT EXISTS idx_users_daily ON users(daily_earned DESC);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+CREATE TABLE IF NOT EXISTS user_titles (
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (user_id, title)
+);
 """)
+db.execute("INSERT OR IGNORE INTO user_titles(user_id, title) SELECT user_id, title FROM users WHERE title != ''")
 db.commit()
 
 def now_ts():
@@ -239,14 +246,10 @@ def pickaxe_upgrade_text(row):
     )
 
 def display_name(row):
-    username = f"@{row['username']}" if row["username"] else str(row["user_id"])
-    if row["user_id"] == ADMIN_ID:
-        return f"😎 {username}"
-    if row["vip_until"] > now_ts():
-        return f"👑 {username}"
-    if row["title"]:
-        return f"{row['title']} {username}"
-    return username
+    username = f"@{row["username"]}" if row["username"] else str(row["user_id"])
+    prefix = "😎 " if row["user_id"] == ADMIN_ID else ("👑 " if row["vip_until"] > now_ts() else "")
+    suffix = f" {row["title"]}" if row["title"] else ""
+    return f"{prefix}{username}{suffix}"
 
 def profile_text(row):
     username = display_name(row)
@@ -547,18 +550,16 @@ async def profile_search_handler(message: Message):
 
 @dp.callback_query(F.data == "change_title")
 async def change_title(callback: CallbackQuery):
-    row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    owned = db.execute("SELECT title FROM user_titles WHERE user_id=? ORDER BY rowid", (callback.from_user.id,)).fetchall()
     buttons = []
-    for title, price in TITLES.items():
-        buttons.append([InlineKeyboardButton(
-            text=f"{title} - {fmt_money(price)} 🔹",
-            callback_data=f"title:{title}"
-        )])
+    for item in owned:
+        title = item["title"]
+        buttons.append([InlineKeyboardButton(text=f"{title} Выбрать", callback_data=f"title:{title}")])
     buttons.append([InlineKeyboardButton(text="❌ Снять значок", callback_data="title:remove")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="title_back")])
     await callback.answer()
     await callback.message.edit_text(
-        f"Осколков титула: {fmt_money(row['shards'])}\nВыберите титульный значок:",
+        "🏷 Выберите купленный титульный значок:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
@@ -569,19 +570,20 @@ async def title_action(callback: CallbackQuery):
         db.execute("UPDATE users SET title='' WHERE user_id=?", (callback.from_user.id,))
         db.commit()
         await callback.answer("Значок снят.")
+        await callback.message.delete()
         await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
         return
-    price = TITLES[action]
-    row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
-    if row["shards"] < price:
-        await callback.answer("Недостаточно Осколков титула.", show_alert=True)
+    owned = db.execute(
+        "SELECT 1 FROM user_titles WHERE user_id=? AND title=?",
+        (callback.from_user.id, action)
+    ).fetchone()
+    if not owned:
+        await callback.answer("Этот значок ещё не куплен.", show_alert=True)
         return
-    db.execute(
-        "UPDATE users SET shards=shards-?, title=? WHERE user_id=?",
-        (price, action, callback.from_user.id)
-    )
+    db.execute("UPDATE users SET title=? WHERE user_id=?", (action, callback.from_user.id))
     db.commit()
     await callback.answer("Титульный значок установлен.")
+    await callback.message.delete()
     await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
 
 @dp.callback_query(F.data == "title_back")
@@ -740,14 +742,19 @@ async def shop_title(callback: CallbackQuery):
 async def buy_title(callback: CallbackQuery):
     title = callback.data.split(":", 1)[1]
     price = TITLES[title]
+    owned = db.execute(
+        "SELECT 1 FROM user_titles WHERE user_id=? AND title=?",
+        (callback.from_user.id, title)
+    ).fetchone()
+    if owned:
+        await callback.answer("Этот титул уже куплен.", show_alert=True)
+        return
     row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
     if row["shards"] < price:
         await callback.answer("Недостаточно Осколков титула.", show_alert=True)
         return
-    db.execute(
-        "UPDATE users SET shards=shards-?, title=? WHERE user_id=?",
-        (price, title, callback.from_user.id)
-    )
+    db.execute("UPDATE users SET shards=shards-?, title=? WHERE user_id=?", (price, title, callback.from_user.id))
+    db.execute("INSERT INTO user_titles(user_id, title) VALUES(?, ?)", (callback.from_user.id, title))
     db.commit()
     await callback.answer("Титул куплен.")
     await callback.message.edit_text(f"✅ Титул {title} куплен и установлен.\n\n🔹 Списано: {fmt_money(price)}")
