@@ -1,839 +1,1048 @@
 import asyncio
-import os
+import random
 import sqlite3
-import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from html import escape
-from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.filters import CommandStart
 from aiogram.types import (
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    Message,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-    CallbackQuery,
+    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 5134277438
-OWNER_USERNAME = "@emptinessdurka"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_ID = 5134277438
+ADMIN_USERNAME = "@emptinessdurka"
+DB_FILE = "deltamine.db"
+MSK = ZoneInfo("Europe/Moscow")
 
-DB_FILE = "/app/data/bot.db"
-REWARD = 10
-COOLDOWN = 3600
-MASKOT_FILE = Path("/app/data/maskot.jpeg")
-if not MASKOT_FILE.exists():
-    local_maskot = Path("maskot.jpeg")
-    if local_maskot.exists():
-        MASKOT_FILE = local_maskot
+WELCOME_PHOTO = "welcome.jpg"
+VIP_PHOTO = "vip.jpg"
+PICKAXE_PHOTOS = {
+    "обычная": "pickaxe_normal.jpg",
+    "укреплённая": "pickaxe_reinforced.jpg",
+    "золотая": "pickaxe_gold.jpg",
+    "алмазная": "pickaxe_diamond.jpg",
+    "титановая": "pickaxe_titanium.jpg",
+}
 
-if not BOT_TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN. Установите переменную окружения BOT_TOKEN.")
+PICKAXES = {
+    "обычная": {"price": 0, "cooldown": 300},
+    "укреплённая": {"price": 1000, "cooldown": 300},
+    "золотая": {"price": 6500, "cooldown": 300},
+    "алмазная": {"price": 12500, "cooldown": 300},
+    "титановая": {"price": 20000, "cooldown": 180},
+}
+PICKAXE_ORDER = ["обычная", "укреплённая", "золотая", "алмазная", "титановая"]
 
+ORES = {
+    "Камень": 1,
+    "Уголь": 5,
+    "Медь": 10,
+    "Железо": 50,
+    "Аметист": 100,
+    "Золото": 250,
+    "Алмаз": 1500,
+    "Титан": 6000,
+}
 
-db = sqlite3.connect(DB_FILE)
+MINE_CHANCES = {
+    "обычная": [
+        ("Камень", 50), ("Уголь", 20), ("Медь", 15), ("Железо", 10), ("Аметист", 5)
+    ],
+    "укреплённая": [
+        ("Уголь", 40), ("Медь", 25), ("Железо", 15), ("Аметист", 10), ("Ничего", 10)
+    ],
+    "золотая": [
+        ("Железо", 40), ("Аметист", 25), ("Золото", 15), ("Алмаз", 5),
+        ("Ничего", 10), ("Гномик вор", 5)
+    ],
+    "алмазная": [
+        ("Аметист", 40), ("Золото", 25), ("Алмаз", 15), ("Титан", 1),
+        ("Ничего", 9), ("Перерыв на хосте", 5), ("Уголёк", 5)
+    ],
+    "титановая": [
+        ("Алмаз", 40), ("Титан", 20), ("Перерыв на хосте", 20),
+        ("Темка не зашла", 10), ("Уголёк", 10)
+    ],
+}
+
+TITLES = {
+    "❤️": 250, "😇": 500, "❄️": 500, "🎃": 500, "🤑": 500,
+    "😈": 750, "💀": 1000, "🧠": 2500, "👻": 3000, "🤡": 5000
+}
+
+DAILY_REWARDS = [(350, 1), (250, 2), (200, 3), (150, 4), (50, 5)]
+
+db = sqlite3.connect(DB_FILE, check_same_thread=False)
 db.row_factory = sqlite3.Row
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("PRAGMA synchronous=NORMAL")
+db.execute("PRAGMA temp_store=MEMORY")
+db.execute("PRAGMA busy_timeout=5000")
 
-db.execute(
-    """
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT NOT NULL DEFAULT '',
-        points INTEGER NOT NULL DEFAULT 0,
-        last_claim INTEGER NOT NULL DEFAULT 0,
-        banned INTEGER NOT NULL DEFAULT 0
-    )
-    """
-)
-db.execute("CREATE INDEX IF NOT EXISTS idx_users_points ON users(points DESC, user_id ASC)")
-db.execute("CREATE TABLE IF NOT EXISTS daily_points (period TEXT NOT NULL, user_id INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, user_id))")
-db.execute("CREATE TABLE IF NOT EXISTS weekly_points (period TEXT NOT NULL, user_id INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, user_id))")
+db.executescript("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    balance INTEGER NOT NULL DEFAULT 0,
+    shards INTEGER NOT NULL DEFAULT 0,
+    ores_mined INTEGER NOT NULL DEFAULT 0,
+    daily_earned INTEGER NOT NULL DEFAULT 0,
+    total_mines INTEGER NOT NULL DEFAULT 0,
+    pickaxe TEXT NOT NULL DEFAULT 'обычная',
+    title TEXT DEFAULT '',
+    vip_until INTEGER NOT NULL DEFAULT 0,
+    last_mine INTEGER NOT NULL DEFAULT 0,
+    last_daily TEXT DEFAULT '',
+    blocked INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stats_daily (
+    date TEXT PRIMARY KEY,
+    money_earned INTEGER NOT NULL DEFAULT 0,
+    mines INTEGER NOT NULL DEFAULT 0,
+    users INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);
+CREATE INDEX IF NOT EXISTS idx_users_daily ON users(daily_earned DESC);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+""")
 db.commit()
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+def now_ts():
+    return int(datetime.now().timestamp())
 
-# Состояния нужны только для админских текстовых действий.
-admin_states: dict[int, str] = {}
-profile_search_states: set[int] = set()
-main_menu_messages: dict[int, list[int]] = {}
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+def today():
+    return datetime.now(MSK).date().isoformat()
 
+def fmt_money(value):
+    return f"{value:,}".replace(",", ".")
 
-def ensure_user(user_id: int, username: str | None) -> None:
-    username = username or ""
-    db.execute(
-        """
-        INSERT INTO users (user_id, username)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET username = excluded.username
-        """,
-        (user_id, username),
-    )
+def ensure_user(user):
+    ts = now_ts()
+    username = user.username or ""
+    db.execute("""
+        INSERT INTO users(user_id, username, created_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET username=excluded.username
+    """, (user.id, username, ts))
     db.commit()
+    return db.execute("SELECT * FROM users WHERE user_id=?", (user.id,)).fetchone()
 
+def is_admin(user_id):
+    return user_id == ADMIN_ID
 
-def get_user(user_id: int):
-    return db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+def is_blocked(user_id):
+    row = db.execute("SELECT blocked FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return bool(row and row["blocked"])
 
-
-def find_user(identifier: str):
-    identifier = identifier.strip()
-    if not identifier:
-        return None
-    if identifier.lstrip("-").isdigit():
-        return db.execute(
-            "SELECT * FROM users WHERE user_id = ? LIMIT 1", (int(identifier),)
-        ).fetchone()
-    username = identifier.lstrip("@").lower()
-    return db.execute(
-        "SELECT * FROM users WHERE LOWER(username) = ? LIMIT 1", (username,)
-    ).fetchone()
-
-
-def username_text(user) -> str:
-    if user["user_id"] == OWNER_ID:
-        return f"{escape(OWNER_USERNAME)} 😎"
-    name = f"@{escape(user['username'].lstrip('@'))}" if user["username"] else f"ID {user['user_id']}"
-    if user["banned"]:
-        name += " 🚫"
-    return name
-
-
-def get_remaining(last_claim: int) -> int:
-    return max(0, COOLDOWN - (int(time.time()) - int(last_claim)))
-
-
-def format_remaining(seconds: int) -> str:
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    seconds %= 60
-    if hours:
-        return f"{hours} ч. {minutes} мин."
-    if minutes:
-        return f"{minutes} мин. {seconds} сек."
-    return f"{seconds} сек."
-
-
-def get_rank(user_id: int):
-    row = db.execute(
-        """
-        SELECT 1 + COUNT(*) AS rank
-        FROM users AS other
-        WHERE other.points > (SELECT points FROM users WHERE user_id = ?)
-        """,
-        (user_id,),
-    ).fetchone()
-    return row["rank"] if row else None
-
-
-def get_period_rank(table: str, period: str, user_id: int):
-    row = db.execute(
-        f"""
-        SELECT 1 + COUNT(*) AS rank
-        FROM {table} AS other
-        JOIN users AS ou ON ou.user_id = other.user_id
-        WHERE other.period = ? AND ou.banned = 0
-          AND other.points > COALESCE((SELECT points FROM {table} WHERE period = ? AND user_id = ?), 0)
-        """,
-        (period, period, user_id),
-    ).fetchone()
-    return row["rank"] if row else None
-
-
-def profile_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Найти профиль", callback_data="profile_search")],
-        [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
-    ])
-
-
-def search_profile_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Новый поиск", callback_data="profile_search")],
-        [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"), InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
-    ])
-
-
-def search_prompt_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="profile_search_cancel")],
-    ])
-
-
-def moscow_now() -> datetime:
-    return datetime.now(timezone.utc).astimezone(MOSCOW_TZ)
-
-
-def daily_period() -> str:
-    return moscow_now().strftime("%Y-%m-%d")
-
-
-def weekly_period() -> str:
-    now = moscow_now()
-    sunday = now - timedelta(days=(now.weekday() + 1) % 7)
-    return sunday.strftime("%Y-%m-%d")
-
-
-def add_period_points(user_id: int, points: int) -> None:
-    db.execute(
-        "INSERT INTO daily_points(period, user_id, points) VALUES (?, ?, ?) ON CONFLICT(period, user_id) DO UPDATE SET points = points + excluded.points",
-        (daily_period(), user_id, points),
-    )
-    db.execute(
-        "INSERT INTO weekly_points(period, user_id, points) VALUES (?, ?, ?) ON CONFLICT(period, user_id) DO UPDATE SET points = points + excluded.points",
-        (weekly_period(), user_id, points),
-    )
-    db.commit()
-
-
-def get_period_leaders(table: str, period: str):
-    return db.execute(
-        f"SELECT u.*, p.points AS period_points FROM {table} p JOIN users u ON u.user_id = p.user_id WHERE p.period = ? AND u.banned = 0 ORDER BY p.points DESC, u.user_id ASC LIMIT 5",
-        (period,),
-    ).fetchall()
-
-
-def leaders_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 День", callback_data="leaders_daily"), InlineKeyboardButton(text="🗓️ Неделя", callback_data="leaders_weekly")],
-        [InlineKeyboardButton(text="♾️ Постоянный", callback_data="leaders_all")],
-        [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
-    ])
-
-
-def main_inline_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="🎁 Получить очки", callback_data="claim")],
-        [
-            InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
-            InlineKeyboardButton(text="🏆 Лидеры", callback_data="leaders"),
-        ],
-        [InlineKeyboardButton(text="📰 Новости", callback_data="news")],
-        [InlineKeyboardButton(text="❓ Помощь", callback_data="help")],
-    ]
-    if user_id == OWNER_ID:
-        rows.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def admin_keyboard() -> ReplyKeyboardMarkup:
+def menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🚫 Забанить"), KeyboardButton(text="♻️ Чёрный список")],
-            [KeyboardButton(text="🧹 Очистить игрока")],
-            [KeyboardButton(text="👥 Пользователи")],
-            [KeyboardButton(text="📢 Рассылка")],
-            [KeyboardButton(text="💥 Сбросить очки")],
-            [KeyboardButton(text="🗑️ Очистить всех пользователей")],
+            [KeyboardButton(text="Спуститься в шахту")],
+            [KeyboardButton(text="Профиль"), KeyboardButton(text="Лидеры")],
+            [KeyboardButton(text="апгрейд"), KeyboardButton(text="магазин")],
+            [KeyboardButton(text="Помощь")],
         ],
-        resize_keyboard=True,
-        is_persistent=True,
+        resize_keyboard=True
     )
 
+def mine_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Добыть руду", callback_data="mine")],
+        [InlineKeyboardButton(text="Назад", callback_data="mine_back")]
+    ])
 
-def admin_return_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="↩️ Вернуться в меню", callback_data="back_menu")]]
+def profile_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Другие профили", callback_data="profile_search")],
+        [InlineKeyboardButton(text="Изменить титульный значок", callback_data="change_title")]
+    ])
+
+def cancel_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отмена", callback_data="profile_cancel")]
+    ])
+
+def upgrade_keyboard(current):
+    idx = PICKAXE_ORDER.index(current)
+    rows = []
+    if idx < len(PICKAXE_ORDER) - 1:
+        nxt = PICKAXE_ORDER[idx + 1]
+        rows.append([InlineKeyboardButton(
+            text=f"Улучшить до {nxt} — {fmt_money(PICKAXES[nxt]['price'])}$",
+            callback_data=f"upgrade:{nxt}"
+        )])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="upgrade_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def shop_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ежедневка", callback_data="shop_daily")],
+        [InlineKeyboardButton(text="Титулы", callback_data="shop_titles")],
+        [InlineKeyboardButton(text="Донат", callback_data="shop_donate")]
+    ])
+
+def donate_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Вип", callback_data="donate_vip")],
+        [InlineKeyboardButton(text="Осколки титула", callback_data="donate_shards")],
+        [InlineKeyboardButton(text="Назад", callback_data="shop_back")]
+    ])
+
+def admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Заблокировать пользователя", callback_data="admin_block")],
+        [InlineKeyboardButton(text="Черный список", callback_data="admin_blacklist")],
+        [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="Очистить пользователя", callback_data="admin_clear")],
+        [InlineKeyboardButton(text="Очистить всех", callback_data="admin_clear_all")],
+        [InlineKeyboardButton(text="Выдать VIP", callback_data="admin_vip")],
+        [InlineKeyboardButton(text="Выдать ОТ", callback_data="admin_shards")],
+        [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
+    ])
+
+def pickaxe_upgrade_text(row):
+    idx = PICKAXE_ORDER.index(row["pickaxe"])
+    if idx == len(PICKAXE_ORDER) - 1:
+        return "Апгрейд:\nУ вас максимальная кирка — титановая."
+
+    nxt = PICKAXE_ORDER[idx + 1]
+    cooldown = PICKAXES[nxt]["cooldown"] // 60
+    extra = f"\nВремя ожидания: {cooldown} минуты." if nxt == "титановая" else ""
+    return (
+        f"Текущая кирка: {row['pickaxe']}\n"
+        f"Следующая кирка: {nxt}\n"
+        f"Цена: {fmt_money(PICKAXES[nxt]['price'])}${extra}\n\n"
+        "Подтвердить улучшение?"
     )
 
+def display_name(row):
+    username = f"@{row['username']}" if row["username"] else str(row["user_id"])
+    if row["user_id"] == ADMIN_ID:
+        return f"😎 {username}"
+    if row["vip_until"] > now_ts():
+        return f"👑 {username}"
+    if row["title"]:
+        return f"{row['title']} {username}"
+    return username
 
-def cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="❌ Отмена")]],
-        resize_keyboard=True,
-        is_persistent=True,
+def profile_text(row):
+    username = display_name(row)
+    title = row["title"] or "нет"
+    vip = "активен" if row["vip_until"] > now_ts() else "неактивен"
+    place = get_place(row["user_id"], daily=False)
+    daily_place = get_place(row["user_id"], daily=True)
+    return (
+        f"Никнейм: {username}\n"
+        f"Текущая кирка: {row['pickaxe']}\n"
+        f"Доллары: {fmt_money(row['balance'])}\n"
+        f"Осколки титула: {fmt_money(row['shards'])}\n"
+        f"Добыто руд: {row['ores_mined']}\n"
+        f"Место в топе: {place}\n"
+        f"Ежедневный топ: {daily_place}\n"
+        f"Вип-статус: {vip}\n"
+        f"Титульный значок: {title}"
     )
 
+def get_place(user_id, daily=False):
+    field = "daily_earned" if daily else "balance"
+    value = db.execute(f"SELECT {field} FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not value:
+        return "—"
+    return db.execute(
+        f"SELECT COUNT(*) + 1 FROM users WHERE {field} > ? AND blocked=0",
+        (value[0],)
+    ).fetchone()[0]
 
-def help_keyboard(section: str | None = None) -> InlineKeyboardMarkup:
-    if section is None:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📖 Основа", callback_data="help_base")],
-                [InlineKeyboardButton(text="🧹 Вайпы", callback_data="help_wipes")],
-                [InlineKeyboardButton(text="🏅 Значки", callback_data="help_badges")],
-                [InlineKeyboardButton(text="↩️ Назад", callback_data="back_menu")],
-            ]
-        )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📖 Основа", callback_data="help_base")],
-            [InlineKeyboardButton(text="🧹 Вайпы", callback_data="help_wipes")],
-            [InlineKeyboardButton(text="🏅 Значки", callback_data="help_badges")],
-            [InlineKeyboardButton(text="↩️ Назад", callback_data="help")],
-        ]
-    )
+def get_top(daily=False):
+    field = "daily_earned" if daily else "balance"
+    return db.execute(
+        f"SELECT user_id, username, {field} AS value, title, vip_until FROM users WHERE blocked=0 ORDER BY {field} DESC, user_id ASC LIMIT 5"
+    ).fetchall()
 
+def weighted_result(pickaxe):
+    items = MINE_CHANCES[pickaxe]
+    r = random.uniform(0, 100)
+    total = 0
+    for result, chance in items:
+        total += chance
+        if r <= total:
+            return result
+    return items[-1][0]
 
-async def check_access_user(user) -> bool:
-    if user is None or user.is_bot:
-        return False
-    ensure_user(user.id, user.username)
-    row = get_user(user.id)
-    if row is None:
-        return False
-    return not (row["banned"] and user.id != OWNER_ID)
+def update_stats(money=0, mines=0):
+    d = today()
+    db.execute("""
+        INSERT INTO stats_daily(date, money_earned, mines, users)
+        VALUES (?, ?, ?, (SELECT COUNT(*) FROM users))
+        ON CONFLICT(date) DO UPDATE SET
+            money_earned=money_earned+excluded.money_earned,
+            mines=mines+excluded.mines,
+            users=(SELECT COUNT(*) FROM users)
+    """, (d, money, mines))
+    db.commit()
 
-
-async def delete_main_menu_label(user_id: int) -> None:
-    ids = main_menu_messages.get(user_id, [])
-    if not ids:
-        return
-    try:
-        await bot.delete_message(user_id, ids[0])
-    except Exception:
-        pass
-    main_menu_messages[user_id] = ids[1:]
-
-
-async def delete_tracked_menu(user_id: int) -> None:
-    ids = main_menu_messages.pop(user_id, [])
-    for message_id in ids:
+async def send_menu(message, welcome=False):
+    if welcome and WELCOME_PHOTO:
         try:
-            await bot.delete_message(user_id, message_id)
+            await message.answer_photo(
+                FSInputFile(WELCOME_PHOTO),
+                caption="Добро пожаловать в DeltaMine! Добывай руду, прокачивай кирку, вступай в лидеры. Удачной игры!",
+                reply_markup=menu()
+            )
+            return
         except Exception:
             pass
+    if welcome:
+        await message.answer(
+            "Добро пожаловать в DeltaMine! Добывай руду, прокачивай кирку, вступай в лидеры. Удачной игры!",
+            reply_markup=menu()
+        )
+    else:
+        await message.answer("Меню:", reply_markup=menu())
 
+async def profile_message(bot, chat_id, target_id):
+    row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+    if not row:
+        return False
+    text = profile_text(row)
+    photos = await bot.get_user_profile_photos(target_id, limit=1)
+    if photos.total_count:
+        await bot.send_photo(
+            chat_id, photos.photos[0][-1].file_id,
+            caption=text, reply_markup=profile_keyboard()
+        )
+    else:
+        await bot.send_message(chat_id, text, reply_markup=profile_keyboard())
+    return True
 
-async def send_main_menu(message: Message, user_id: int, text: str | None = None):
-    await delete_tracked_menu(user_id)
-    first = await message.answer(
-        text or "🏠 Главное меню",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    second = await message.answer(
-        "🎉 <b>Добро пожаловать в самого бесполезного бота в вашей жизни!</b> 🤡\n"
-        "🎯 Собирай очки каждый час и попади в лидеры 🏆\n"
-        "😎 Автор: @emptinessdurka",
-        reply_markup=main_inline_keyboard(user_id),
-    )
-    main_menu_messages[user_id] = [first.message_id, second.message_id]
+async def show_upgrade(bot, chat_id, row):
+    photo = PICKAXE_PHOTOS.get(row["pickaxe"])
+    text = pickaxe_upgrade_text(row)
+    if photo:
+        try:
+            await bot.send_photo(chat_id, FSInputFile(photo), caption=text, reply_markup=upgrade_keyboard(row["pickaxe"]))
+            return
+        except Exception:
+            pass
+    await bot.send_message(chat_id, text, reply_markup=upgrade_keyboard(row["pickaxe"]))
 
+async def daily_rewards(bot):
+    rows = get_top(True)
+    rewards = {place: amount for amount, place in DAILY_REWARDS}
+    winners = []
+    for place, row in enumerate(rows, 1):
+        amount = rewards.get(place, 0)
+        if amount:
+            user = db.execute("SELECT user_id FROM users WHERE username=?", (row["username"] or "",)).fetchone()
+            # Username is not unique/reliable, so resolve by ordered IDs instead below.
+            users = db.execute(
+                "SELECT user_id, username, daily_earned FROM users WHERE blocked=0 ORDER BY daily_earned DESC, user_id ASC LIMIT 5"
+            ).fetchall()
+            if place <= len(users):
+                winners.append((place, users[place - 1]["user_id"], users[place - 1]["username"], amount))
+
+    lines = ["Ежедневные лидеры:"]
+    for place, uid, username, amount in winners:
+        name = f"@{username}" if username else str(uid)
+        db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (amount, uid))
+        lines.append(f"{place}. {name} — {amount} ОТ")
+    db.commit()
+
+    all_users = [r["user_id"] for r in db.execute("SELECT user_id FROM users WHERE blocked=0").fetchall()]
+    message_text = "\n".join(lines) if winners else "Ежедневные лидеры:\nСегодня победителей нет."
+    for uid in all_users:
+        try:
+            await bot.send_message(uid, message_text)
+            await asyncio.sleep(0.04)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+        except (TelegramForbiddenError, TelegramBadRequest):
+            pass
+
+    db.execute("UPDATE users SET daily_earned=0")
+    db.commit()
+
+async def daily_loop(bot):
+    while True:
+        now = datetime.now(MSK)
+        next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        await asyncio.sleep(max(1, (next_day - now).total_seconds()))
+        await daily_rewards(bot)
+
+# Search state only lives in RAM; nothing extra is written to the database.
+profile_search_users = set()
+admin_states = {}
+
+dp = Dispatcher()
 
 @dp.message(CommandStart())
-async def start(message: Message) -> None:
-    user = message.from_user
-    if not await check_access_user(user):
+async def start(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
+        await message.answer("Вы заблокированы.")
         return
-    await send_main_menu(message, user.id)
+    await send_menu(message, welcome=True)
 
-
-@dp.message(Command("help"))
-async def help_command(message: Message) -> None:
-    user = message.from_user
-    if not await check_access_user(user):
+@dp.message(F.text == "Спуститься в шахту")
+async def mine_menu(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
         return
-    await send_help(message)
+    await message.answer("Шахта:", reply_markup=mine_keyboard())
 
+@dp.callback_query(F.data == "mine")
+async def mine(callback: CallbackQuery):
+    row = ensure_user(callback.from_user)
+    if row["blocked"]:
+        await callback.answer("Вы заблокированы.", show_alert=True)
+        return
 
-async def send_help(message: Message):
-    caption = "Привет, я Уголёк! Готова рассказать тебе всё"
-    if MASKOT_FILE.exists():
-        await message.answer_photo(
-            FSInputFile(MASKOT_FILE),
-            caption=caption,
-            reply_markup=help_keyboard(),
+    current = now_ts()
+    cooldown = PICKAXES[row["pickaxe"]]["cooldown"]
+    remaining = cooldown - (current - row["last_mine"])
+    if remaining > 0:
+        m, s = divmod(remaining, 60)
+        await callback.answer(f"Подожди немного\nСледующее получение будет доступно через {m}:{s:02d}", show_alert=True)
+        return
+
+    result = weighted_result(row["pickaxe"])
+    money = 0
+    extra = ""
+
+    if result in ORES:
+        money = ORES[result]
+        extra = f"\nполучено: {fmt_money(money)}$"
+        db.execute("""
+            UPDATE users
+            SET balance=balance+?, daily_earned=daily_earned+?, ores_mined=ores_mined+1,
+                total_mines=total_mines+1, last_mine=?
+            WHERE user_id=?
+        """, (money, money, current, callback.from_user.id))
+        update_stats(money=money, mines=1)
+    elif result == "Гномик вор":
+        loss = max(0, row["balance"] * 5 // 100)
+        db.execute(
+            "UPDATE users SET balance=balance-?, total_mines=total_mines+1, last_mine=? WHERE user_id=?",
+            (loss, current, callback.from_user.id)
         )
+        update_stats(mines=1)
+        extra = f"\nГномик вор забрал 5% баланса: {fmt_money(loss)}$"
+    elif result == "Темка не зашла":
+        loss = max(0, row["balance"] * 3 // 100)
+        db.execute(
+            "UPDATE users SET balance=balance-?, total_mines=total_mines+1, last_mine=? WHERE user_id=?",
+            (loss, current, callback.from_user.id)
+        )
+        update_stats(mines=1)
+        extra = f"\nТемка не зашла. Минус 3% баланса: {fmt_money(loss)}$"
     else:
-        await message.answer(caption, reply_markup=help_keyboard())
-
-
-async def edit_help(callback: CallbackQuery, text: str):
-    if callback.message.photo:
-        await callback.message.edit_caption(
-            caption=text,
-            reply_markup=help_keyboard("section"),
+        db.execute(
+            "UPDATE users SET total_mines=total_mines+1, last_mine=? WHERE user_id=?",
+            (current, callback.from_user.id)
         )
-    else:
-        await callback.message.edit_text(
-            text,
-            reply_markup=help_keyboard("section"),
-        )
+        update_stats(mines=1)
+        if result == "Перерыв на хосте":
+            extra = "\nНа хосте перерыв."
+        elif result == "Уголёк":
+            extra = "\nВам попался уголёк."
+        else:
+            extra = "\nНичего не найдено."
 
-
-@dp.callback_query(F.data == "help")
-async def help_callback(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    if not await check_access_user(callback.from_user):
-        await callback.answer()
-        return
-
-    await callback.answer()
-
-    # Если помощь открыта из текстового сообщения меню, заменяем его
-    # на сообщение с маскотом. Если маскот недоступен, оставляем текст.
-    if callback.message.photo:
-        await callback.message.edit_caption(
-            caption="Привет, я Уголёк! Готова рассказать тебе всё",
-            reply_markup=help_keyboard(),
-        )
-    elif MASKOT_FILE.exists():
-        await callback.message.delete()
-        await send_help(callback.message)
-    else:
-        await callback.message.edit_text(
-            "Привет, я Уголёк! Готова рассказать тебе всё",
-            reply_markup=help_keyboard(),
-        )
-
-
-@dp.callback_query(F.data == "help_base")
-async def help_base(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    await callback.answer()
-    await edit_help(
-        callback,
-        "В меню есть кнопка «🎁Получить очки». Нажимай на неё и получай 10 очков каждый час! "
-        "В «Профиле» ты можешь увидеть кол-во своих очков и место в таблице лидеров. "
-        "В «Лидерах» ты можешь отслеживать лучших игроков. В «Новостях» ты найдёшь ссылку "
-        "для перехода в новостной канал бота, там вся полезная информация и опросы"
-    )
-
-
-@dp.callback_query(F.data == "help_wipes")
-async def help_wipes(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    await callback.answer()
-    await edit_help(
-        callback,
-        "Вайпы - (от англ. wipe - «стереть», «очистить»)\n\n"
-        "Вайпы (очистка серверов) нужна для баланса между новичками и долгими игроками. "
-        "В девятое число каждого месяца проходит опрос в новостном канале. После опроса "
-        "решается будет ли сброс в этом месяце всех очков или нет."
-    )
-
-
-@dp.callback_query(F.data == "help_badges")
-async def help_badges(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    await callback.answer()
-    await edit_help(
-        callback,
-        "Наверняка вы замечали в лидерах какие-то значки после никнейма. Что они значат?\n\n"
-        "😎 - администрация бота (данный значок есть только у владельца бота)\n\n"
-        "🚫 - блокировка (человек заблокирован в боте и не может ничего в нём делать)"
-    )
-
-
-@dp.callback_query(F.data == "claim")
-async def claim_callback(callback: CallbackQuery):
-    user = callback.from_user
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    now = int(time.time())
-    cursor = db.execute(
-        """
-        UPDATE users
-        SET points = points + ?, last_claim = ?
-        WHERE user_id = ? AND last_claim <= ? AND banned = 0
-        """,
-        (REWARD, now, user.id, now - COOLDOWN),
-    )
     db.commit()
-    if cursor.rowcount == 0:
-        row = get_user(user.id)
-        remaining = get_remaining(row["last_claim"]) if row else COOLDOWN
-        await callback.answer(f"⏳ Попробуйте через {format_remaining(remaining)}", show_alert=True)
-        return
-    add_period_points(user.id, REWARD)
-    await callback.answer(f"🎁 Вы получили {REWARD} очков!", show_alert=True)
-
-
-@dp.callback_query(F.data == "profile")
-async def profile_callback(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    user = callback.from_user
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    row = get_user(user.id)
-    rank = get_rank(user.id)
     await callback.answer()
-    daily_row = db.execute("SELECT points FROM daily_points WHERE period = ? AND user_id = ?", (daily_period(), user.id)).fetchone()
-    weekly_row = db.execute("SELECT points FROM weekly_points WHERE period = ? AND user_id = ?", (weekly_period(), user.id)).fetchone()
-    daily_points = daily_row["points"] if daily_row else 0
-    weekly_points = weekly_row["points"] if weekly_row else 0
-    await callback.message.edit_text(
-        "👤 <b>Ваш профиль:</b>\n"
-        f"Юзернейм - {username_text(row)}\n"
-        f"Очки - {row['points']} 💰\n"
-        f"Место в топе - {rank} 🏆\n"
-        f"За день - {daily_points} 📅\n"
-        f"За неделю - {weekly_points} 🗓️",
-        reply_markup=profile_keyboard(),
-    )
+    try:
+        await callback.message.edit_text(f"Вы получили {result}!{extra}", reply_markup=mine_keyboard())
+    except TelegramBadRequest:
+        pass
 
-
-@dp.callback_query(F.data == "news")
-async def news_callback(callback: CallbackQuery):
-    await delete_main_menu_label(callback.from_user.id)
-    user = callback.from_user
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    await callback.answer()
-    await callback.message.edit_text(
-        "📰 <b>Новости</b>",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📰 Открыть новостной канал", url="https://t.me/points_collector_channel")],
-                [InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")],
-            ]
-        ),
-    )
-
-
-@dp.callback_query(F.data == "leaders")
-async def leaders_callback(callback: CallbackQuery):
-    user = callback.from_user
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    await delete_main_menu_label(user.id)
-    await callback.answer()
-    await callback.message.edit_text(
-        "🏆 <b>Лидеры</b>\n\nВыберите раздел:\n\n"
-        "📅 День - сброс в 00:00 по МСК.\n"
-        "🗓️ Неделя - сброс в воскресенье в 00:00 по МСК.\n"
-        "♾️ Постоянный - сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!",
-        reply_markup=leaders_keyboard(),
-    )
-
-
-async def show_leaderboard(callback: CallbackQuery, kind: str):
-    if not await check_access_user(callback.from_user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    if kind == "daily":
-        rows = get_period_leaders("daily_points", daily_period())
-        title = "📅 <b>Ежедневные лидеры</b>"
-        footer = "Сбрасывается ежедневно в 00:00 по МСК."
-    elif kind == "weekly":
-        rows = get_period_leaders("weekly_points", weekly_period())
-        title = "🗓️ <b>Еженедельные лидеры</b>"
-        footer = "Сбрасывается каждое воскресенье в 00:00 по МСК."
-    else:
-        rows = db.execute("SELECT * FROM users WHERE points >= 0 AND banned = 0 ORDER BY points DESC, user_id ASC LIMIT 5").fetchall()
-        title = "♾️ <b>Постоянные лидеры</b>"
-        footer = "Постоянный топ! Сбрасывается ежемесячно в случае принятия решения в голосовании в нашем канале!"
-    places = ["👑", "🥈", "🥉", "4️⃣", "5️⃣"]
-    text = f"{title}\n\n"
-    for index, row in enumerate(rows):
-        points = row["period_points"] if kind in {"daily", "weekly"} else row["points"]
-        text += f"{places[index]}: {username_text(row)} - {points} очков\n"
-    if not rows:
-        text += "Пока здесь никого нет 😴\n"
-    text += f"\n{footer}"
-    await callback.answer()
-    await callback.message.edit_text(text, reply_markup=leaders_keyboard())
-
-
-@dp.callback_query(F.data == "leaders_daily")
-async def leaders_daily_callback(callback: CallbackQuery):
-    await show_leaderboard(callback, "daily")
-
-
-@dp.callback_query(F.data == "leaders_weekly")
-async def leaders_weekly_callback(callback: CallbackQuery):
-    await show_leaderboard(callback, "weekly")
-
-
-@dp.callback_query(F.data == "leaders_all")
-async def leaders_all_callback(callback: CallbackQuery):
-    await show_leaderboard(callback, "all")
-
-
-@dp.callback_query(F.data == "admin")
-async def admin_callback(callback: CallbackQuery):
-    await delete_tracked_menu(callback.from_user.id)
-    if callback.from_user.id != OWNER_ID:
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    admin_states.pop(OWNER_ID, None)
-    await callback.answer()
-    # Показываем админку, а снизу оставляем только её временную клавиатуру.
-    await callback.message.answer("⚙️ <b>Админ-панель</b>", reply_markup=admin_keyboard())
-    await callback.message.answer("↩️ Когда закончишь, нажми кнопку ниже.", reply_markup=admin_return_inline())
-
-
-@dp.callback_query(F.data == "back_menu")
-async def back_menu(callback: CallbackQuery):
-    user = callback.from_user
-    if user is None:
-        return
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    admin_states.pop(user.id, None)
-    profile_search_states.discard(user.id)
-    await callback.answer()
-    await delete_tracked_menu(user.id)
+@dp.callback_query(F.data == "mine_back")
+async def mine_back(callback: CallbackQuery):
     try:
         await callback.message.delete()
-    except Exception:
+    except TelegramBadRequest:
         pass
-    await send_main_menu(callback.message, user.id)
+    await callback.answer()
+    await send_menu(callback.message, welcome=False)
 
+@dp.message(F.text == "Профиль")
+async def profile(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
+        return
+    await profile_message(message.bot, message.chat.id, message.from_user.id)
 
 @dp.callback_query(F.data == "profile_search")
-async def profile_search_callback(callback: CallbackQuery):
-    user = callback.from_user
-    if not await check_access_user(user):
-        await callback.answer("🚫 Доступ запрещён.", show_alert=True)
-        return
-    profile_search_states.add(user.id)
-    await delete_main_menu_label(user.id)
+async def profile_search(callback: CallbackQuery):
+    profile_search_users.add(callback.from_user.id)
     await callback.answer()
-    await callback.message.edit_text(
-        "🔎 <b>Поиск профиля</b>\n\nОтправьте @username или ID пользователя.",
-        reply_markup=search_prompt_keyboard(),
+    await callback.message.answer(
+        "Введите @username или Telegram ID игрока для поиска профиля.",
+        reply_markup=cancel_keyboard()
     )
 
-
-@dp.callback_query(F.data == "profile_search_cancel")
-async def profile_search_cancel_callback(callback: CallbackQuery):
-    user = callback.from_user
-    profile_search_states.discard(user.id)
-    await callback.answer("Поиск отменён.")
-    row = get_user(user.id)
-    if row is None:
-        await callback.message.edit_text("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="↩️ В меню", callback_data="back_menu")]]))
-        return
-    daily_row = db.execute("SELECT points FROM daily_points WHERE period = ? AND user_id = ?", (daily_period(), user.id)).fetchone()
-    weekly_row = db.execute("SELECT points FROM weekly_points WHERE period = ? AND user_id = ?", (weekly_period(), user.id)).fetchone()
-    daily_points = daily_row["points"] if daily_row else 0
-    weekly_points = weekly_row["points"] if weekly_row else 0
-    await callback.message.edit_text(
-        "👤 <b>Ваш профиль:</b>\n"
-        f"Юзернейм - {username_text(row)}\n"
-        f"Очки - {row['points']} 💰\n"
-        f"Место в топе - {get_rank(user.id)} 🏆\n"
-        f"За день - {daily_points} 📅\n"
-        f"За неделю - {weekly_points} 🗓️",
-        reply_markup=profile_keyboard(),
-    )
-
-
-
-
-# ===== Админка. Оставлена на ReplyKeyboard для удобства владельца. =====
-
-
-def is_owner(message: Message) -> bool:
-    return message.from_user is not None and message.from_user.id == OWNER_ID
-
-
-@dp.message(F.text == "🚫 Забанить")
-async def ban_start(message: Message):
-    if not is_owner(message): return
-    admin_states[OWNER_ID] = "ban"
-    await message.answer("🚫 Введите юзернейм:", reply_markup=cancel_keyboard())
-
-
-@dp.message(F.text == "♻️ Чёрный список")
-async def blacklist(message: Message):
-    if not is_owner(message): return
-    rows = db.execute("SELECT * FROM users WHERE banned = 1 ORDER BY user_id").fetchall()
-    text = "♻️ <b>Чёрный список</b>\n\n"
-    if rows:
-        text += "\n".join(f"🚫 {username_text(row)}" for row in rows)
-        text += "\n\nВведите имя пользователя для разблокировки:"
-        admin_states[OWNER_ID] = "unban"
-        markup = cancel_keyboard()
-    else:
-        text += "Список пуст."
-        markup = admin_keyboard()
-    await message.answer(text, reply_markup=markup)
-
-
-@dp.message(F.text == "🧹 Очистить игрока")
-async def clear_player_start(message: Message):
-    if not is_owner(message): return
-    admin_states[OWNER_ID] = "clear_user"
-    await message.answer("🧹 Введите юзернейм:", reply_markup=cancel_keyboard())
-
-
-@dp.message(F.text == "👥 Пользователи")
-async def users_count(message: Message):
-    if not is_owner(message): return
-    count = db.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
-    await message.answer(f"👥 Число пользователей в боте: {count}", reply_markup=admin_keyboard())
-
-
-@dp.message(F.text == "📢 Рассылка")
-async def broadcast_start(message: Message):
-    if not is_owner(message): return
-    admin_states[OWNER_ID] = "broadcast"
-    await message.answer("📢 Введите сообщение для рассылки всем пользователям бота.", reply_markup=cancel_keyboard())
-
-
-@dp.message(F.text == "💥 Сбросить очки")
-async def reset_points_start(message: Message):
-    if not is_owner(message): return
-    admin_states[OWNER_ID] = "reset_points_first"
-    await message.answer(
-        "⚠️ Сбросить очки и таймеры у всех пользователей?\n\nНапишите ДА для продолжения.",
-        reply_markup=cancel_keyboard(),
-    )
-
-
-@dp.message(F.text == "🗑️ Очистить всех пользователей")
-async def delete_all_start(message: Message):
-    if not is_owner(message): return
-    admin_states[OWNER_ID] = "delete_all_first"
-    await message.answer(
-        "⚠️ Это удалит аккаунты всех пользователей из базы.\n\nНапишите ДА для продолжения.",
-        reply_markup=cancel_keyboard(),
-    )
-
-
-@dp.message(F.text == "❌ Отмена")
-async def cancel(message: Message):
-    if not is_owner(message): return
-    admin_states.pop(OWNER_ID, None)
-    await message.answer("❌ Действие отменено.", reply_markup=admin_keyboard())
-
+@dp.callback_query(F.data == "profile_cancel")
+async def profile_cancel(callback: CallbackQuery):
+    profile_search_users.discard(callback.from_user.id)
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
 
 @dp.message(F.text)
-async def profile_search_input(message: Message):
-    user = message.from_user
-    if user is None or user.id not in profile_search_states:
+async def profile_search_handler(message: Message):
+    uid = message.from_user.id
+    if uid not in profile_search_users:
         return
-    if not await check_access_user(user):
-        profile_search_states.discard(user.id)
-        return
+    profile_search_users.discard(uid)
+    query = message.text.strip()
+    target = None
 
-    query = (message.text or "").strip()
-    if not query:
-        await message.answer("❌ Пользователь не найден.", reply_markup=search_prompt_keyboard())
-        return
+    if query.startswith("@"):
+        target = db.execute(
+            "SELECT * FROM users WHERE lower(username)=lower(?)",
+            (query[1:],)
+        ).fetchone()
+    elif query.isdigit():
+        target = db.execute("SELECT * FROM users WHERE user_id=?", (int(query),)).fetchone()
 
-    row = find_user(query)
-    if row is None:
-        await message.answer("❌ Пользователь не найден.", reply_markup=search_prompt_keyboard())
+    if not target:
+        await message.answer("Игрок не найден.")
         return
+    await profile_message(message.bot, message.chat.id, target["user_id"])
 
-    profile_search_states.discard(user.id)
-    daily_row = db.execute(
-        "SELECT points FROM daily_points WHERE period = ? AND user_id = ?",
-        (daily_period(), row["user_id"]),
-    ).fetchone()
-    weekly_row = db.execute(
-        "SELECT points FROM weekly_points WHERE period = ? AND user_id = ?",
-        (weekly_period(), row["user_id"]),
-    ).fetchone()
-    daily_points = daily_row["points"] if daily_row else 0
-    weekly_points = weekly_row["points"] if weekly_row else 0
-    text = (
-        "👤 <b>Профиль игрока</b>\n"
-        f"Никнейм - {username_text(row)}\n"
-        f"Очки - {row['points']} 💰\n"
-        f"Место в топе - {get_rank(row['user_id'])} 🏆\n"
-        f"За день - {daily_points} 📅\n"
-        f"За неделю - {weekly_points} 🗓️"
+@dp.callback_query(F.data == "change_title")
+async def change_title(callback: CallbackQuery):
+    row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    buttons = []
+    for title, price in TITLES.items():
+        buttons.append([InlineKeyboardButton(
+            text=f"{title} — {fmt_money(price)} ОТ",
+            callback_data=f"title:{title}"
+        )])
+    buttons.append([InlineKeyboardButton(text="Снять значок", callback_data="title:remove")])
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="title_back")])
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Осколков титула: {fmt_money(row['shards'])}\nВыберите титульный значок:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
-    await message.answer(text, reply_markup=search_profile_keyboard())
 
-
-@dp.message()
-async def admin_input(message: Message):
-    # Игроки и любые их обычные сообщения здесь полностью игнорируются.
-    if not is_owner(message):
+@dp.callback_query(F.data.startswith("title:"))
+async def title_action(callback: CallbackQuery):
+    action = callback.data.split(":", 1)[1]
+    if action == "remove":
+        db.execute("UPDATE users SET title='' WHERE user_id=?", (callback.from_user.id,))
+        db.commit()
+        await callback.answer("Значок снят.")
+        await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
         return
-    state = admin_states.get(OWNER_ID)
+    price = TITLES[action]
+    row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    if row["shards"] < price:
+        await callback.answer("Недостаточно Осколков титула.", show_alert=True)
+        return
+    db.execute(
+        "UPDATE users SET shards=shards-?, title=? WHERE user_id=?",
+        (price, action, callback.from_user.id)
+    )
+    db.commit()
+    await callback.answer("Титульный значок установлен.")
+    await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
+
+@dp.callback_query(F.data == "title_back")
+async def title_back(callback: CallbackQuery):
+    await callback.answer()
+    await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
+
+@dp.message(F.text == "Лидеры")
+async def leaders(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
+        return
+    top = get_top(False)
+    daily = get_top(True)
+
+    text = "Постоянный топ:\n"
+    for i, r in enumerate(top, 1):
+        name = display_name(r)
+        text += f"{i}. {name} — {fmt_money(r['value'])}$\n"
+
+    text += "\nЕжедневный топ:\n"
+    for i, r in enumerate(daily, 1):
+        name = display_name(r)
+        text += f"{i}. {name} — {fmt_money(r['value'])}$\n"
+
+    text += (
+        "\nЕжедневный топ обновляется в 00:00 по МСК.\n"
+        "Топ-5 получают 1.000 Осколков титула:\n"
+        "1 место — 350 ОТ\n"
+        "2 место — 250 ОТ\n"
+        "3 место — 200 ОТ\n"
+        "4 место — 150 ОТ\n"
+        "5 место — 50 ОТ"
+    )
+    await message.answer(text)
+
+@dp.message(F.text == "апгрейд")
+async def upgrade(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
+        return
+    await show_upgrade(message.bot, message.chat.id, row)
+
+@dp.callback_query(F.data.startswith("upgrade:"))
+async def upgrade_action(callback: CallbackQuery):
+    target = callback.data.split(":", 1)[1]
+    row = db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    if PICKAXE_ORDER.index(target) != PICKAXE_ORDER.index(row["pickaxe"]) + 1:
+        await callback.answer("Недоступное улучшение.", show_alert=True)
+        return
+    price = PICKAXES[target]["price"]
+    if row["balance"] < price:
+        await callback.answer("Недостаточно долларов.", show_alert=True)
+        return
+    db.execute(
+        "UPDATE users SET balance=balance-?, pickaxe=? WHERE user_id=?",
+        (price, target, callback.from_user.id)
+    )
+    db.commit()
+    await callback.answer("Кирка улучшена.")
+    await show_upgrade(callback.bot, callback.message.chat.id,
+                       db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone())
+
+@dp.callback_query(F.data == "upgrade_back")
+async def upgrade_back(callback: CallbackQuery):
+    await callback.answer()
+    await send_menu(callback.message, welcome=False)
+
+@dp.message(F.text == "магазин")
+async def shop(message: Message):
+    row = ensure_user(message.from_user)
+    if row["blocked"]:
+        return
+    await message.answer("Магазин:", reply_markup=shop_keyboard())
+
+@dp.callback_query(F.data == "shop_daily")
+async def shop_daily(callback: CallbackQuery):
+    row = db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    d = today()
+    if row["last_daily"] == d:
+        await callback.answer("Сегодня ежедневка уже получена.", show_alert=True)
+        return
+    multiplier = 2 if row["vip_until"] > now_ts() else 1
+    dollars = 100 * multiplier
+    shards = 30 * multiplier
+    db.execute(
+        "UPDATE users SET balance=balance+?, shards=shards+?, last_daily=? WHERE user_id=?",
+        (dollars, shards, d, callback.from_user.id)
+    )
+    db.commit()
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Ежедневка:\n+{dollars}$\n+{shards} ОТ",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data="shop_back")]
+        ])
+    )
+
+@dp.callback_query(F.data == "shop_titles")
+async def shop_titles(callback: CallbackQuery):
+    buttons = [
+        [InlineKeyboardButton(text=f"{title} — {fmt_money(price)} ОТ", callback_data=f"shop_title:{title}")]
+        for title, price in TITLES.items()
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="shop_back")])
+    await callback.answer()
+    await callback.message.edit_text("Титулы:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("shop_title:"))
+async def shop_title(callback: CallbackQuery):
+    title = callback.data.split(":", 1)[1]
+    price = TITLES[title]
+    await callback.answer()
+    await callback.message.edit_text(
+        f"{title}\nЦена: {fmt_money(price)} ОТ\n\nКупить?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Купить", callback_data=f"buy_title:{title}")],
+            [InlineKeyboardButton(text="Назад", callback_data="shop_titles")]
+        ])
+    )
+
+@dp.callback_query(F.data.startswith("buy_title:"))
+async def buy_title(callback: CallbackQuery):
+    title = callback.data.split(":", 1)[1]
+    price = TITLES[title]
+    row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    if row["shards"] < price:
+        await callback.answer("Недостаточно Осколков титула.", show_alert=True)
+        return
+    db.execute(
+        "UPDATE users SET shards=shards-?, title=? WHERE user_id=?",
+        (price, title, callback.from_user.id)
+    )
+    db.commit()
+    await callback.answer("Титул куплен.")
+    await callback.message.edit_text(f"Титул {title} установлен.")
+
+@dp.callback_query(F.data == "shop_back")
+async def shop_back(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Магазин:", reply_markup=shop_keyboard())
+
+@dp.callback_query(F.data == "shop_donate")
+async def shop_donate(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Донат:", reply_markup=donate_keyboard())
+
+@dp.callback_query(F.data == "donate_vip")
+async def donate_vip(callback: CallbackQuery):
+    text = (
+        "VIP 35₽/мес:\n"
+        "Вип титул\n"
+        "2x ежедневки\n"
+        "250 ОТ сразу на баланс\n\n"
+        "Ссылка для оплаты -\n\n"
+        "После оплаты получение товара может осуществляться в течение 24 часов! "
+        "Товар возврату не подлежит!"
+    )
+    await callback.answer()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="shop_donate")]
+    ])
+    if VIP_PHOTO:
+        try:
+            await callback.message.delete()
+            await callback.message.answer_photo(FSInputFile(VIP_PHOTO), caption=text, reply_markup=keyboard)
+            return
+        except Exception:
+            pass
+    await callback.message.edit_text(text, reply_markup=keyboard)
+
+@dp.callback_query(F.data == "donate_shards")
+async def donate_shards(callback: CallbackQuery):
+    buttons = [
+        [InlineKeyboardButton(text="500 ОТ - 45₽", callback_data="pay:500")],
+        [InlineKeyboardButton(text="1.000 ОТ - 80₽", callback_data="pay:1000")],
+        [InlineKeyboardButton(text="5.000 ОТ - 300₽", callback_data="pay:5000")],
+        [InlineKeyboardButton(text="Назад", callback_data="shop_donate")]
+    ]
+    await callback.answer()
+    await callback.message.edit_text("Осколки титула:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("pay:"))
+async def pay(callback: CallbackQuery):
+    amount = callback.data.split(":")[1]
+    labels = {
+        "500": "Обычный товар",
+        "1000": "Выгодный товар",
+        "5000": "Почти даром"
+    }
+    await callback.answer()
+    await callback.message.edit_text(
+        f"{amount} ОТ:\n\n{labels[amount]}\n\n"
+        "Ссылка для оплаты -\n\n"
+        "После оплаты получение товара может осуществляться в течение 24 часов! "
+        "Товар возврату не подлежит!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data="donate_shards")]
+        ])
+    )
+
+@dp.message(F.text == "Помощь")
+async def help_button(message: Message):
+    row = ensure_user(message.from_user)
+    if not row["blocked"]:
+        await message.answer("Помощь пока недоступна.")
+@dp.message(F.text.startswith("/admin"))
+async def admin(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("Админка:", reply_markup=admin_keyboard())
+
+# Admin helpers
+admin_target_states = {}
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def admin_actions(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    action = callback.data
+    await callback.answer()
+
+    if action == "admin_stats":
+        total = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        money = db.execute("SELECT COALESCE(SUM(balance),0) FROM users").fetchone()[0]
+        mines = db.execute("SELECT COALESCE(SUM(total_mines),0) FROM users").fetchone()[0]
+        now = datetime.now(MSK)
+        week = (now.date() - timedelta(days=6)).isoformat()
+        month = now.date().replace(day=1).isoformat()
+        day = today()
+        def stat(d1, d2=None):
+            if d2:
+                r = db.execute(
+                    "SELECT COALESCE(SUM(money_earned),0), COALESCE(SUM(mines),0) FROM stats_daily WHERE date BETWEEN ? AND ?",
+                    (d1, d2)
+                ).fetchone()
+            else:
+                r = db.execute(
+                    "SELECT COALESCE(SUM(money_earned),0), COALESCE(SUM(mines),0) FROM stats_daily WHERE date=?",
+                    (d1,)
+                ).fetchone()
+            return r[0], r[1]
+        day_m, day_n = stat(day)
+        week_m, week_n = stat(week, day)
+        month_m, month_n = stat(month, day)
+        await callback.message.edit_text(
+            f"Статистика:\n\n"
+            f"За всё время:\nПользователей: {total}\nБаланс всех: {fmt_money(money)}$\nКопаний: {mines}\n\n"
+            f"За день:\nЗаработано: {fmt_money(day_m)}$\nКопаний: {day_n}\n\n"
+            f"За неделю:\nЗаработано: {fmt_money(week_m)}$\nКопаний: {week_n}\n\n"
+            f"За месяц:\nЗаработано: {fmt_money(month_m)}$\nКопаний: {month_n}",
+            reply_markup=admin_keyboard()
+        )
+        return
+
+    if action == "admin_blacklist":
+        rows = db.execute("SELECT user_id, username FROM users WHERE blocked=1 ORDER BY user_id").fetchall()
+        text = "Черный список:\n" + ("\n".join(
+            f"{r['user_id']} — @{r['username']}" if r["username"] else str(r["user_id"])
+            for r in rows
+        ) if rows else "Пусто")
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Разблокировать", callback_data="admin_unblock")],
+                [InlineKeyboardButton(text="Назад", callback_data="admin_cancel")]
+            ])
+        )
+        return
+
+    if action == "admin_unblock":
+        admin_target_states[callback.from_user.id] = "admin_unblock"
+        await callback.message.answer("Введите @username или Telegram ID для разблокировки.")
+        return
+
+    if action in {"admin_block", "admin_clear", "admin_vip", "admin_shards"}:
+        admin_target_states[callback.from_user.id] = action
+        await callback.message.answer("Введите Telegram ID пользователя.")
+        return
+
+    if action == "admin_clear_all":
+        await callback.message.edit_text(
+            "Точно очистить данные всех пользователей?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Да, очистить", callback_data="admin_confirm_clear_all")],
+                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+            ])
+        )
+        return
+
+    if action == "admin_broadcast":
+        admin_target_states[callback.from_user.id] = "admin_broadcast"
+        await callback.message.answer("Введите текст рассылки.")
+        return
+
+@dp.callback_query(F.data == "admin_confirm_clear_all")
+async def admin_confirm_clear_all(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    db.execute("""
+        UPDATE users SET balance=0, shards=0, ores_mined=0, daily_earned=0,
+        total_mines=0, pickaxe='обычная', title='', vip_until=0, last_mine=0, last_daily=''
+    """)
+    db.commit()
+    await callback.answer("Данные всех пользователей очищены.")
+    await callback.message.edit_text("Данные всех пользователей очищены.", reply_markup=admin_keyboard())
+
+@dp.callback_query(F.data == "admin_cancel")
+async def admin_cancel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    admin_target_states.pop(callback.from_user.id, None)
+    admin_states.pop(callback.from_user.id, None)
+    await callback.answer()
+    await callback.message.edit_text("Админка:", reply_markup=admin_keyboard())
+
+@dp.message(F.text)
+async def admin_input(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    state = admin_target_states.get(message.from_user.id)
     if not state:
         return
-    text = (message.text or "").strip()
 
-    if state == "broadcast":
-        if not text:
-            await message.answer("❌ Сообщение не может быть пустым.", reply_markup=cancel_keyboard())
-            return
-        rows = db.execute("SELECT user_id FROM users WHERE banned = 0").fetchall()
-        admin_states.pop(OWNER_ID, None)
-        sent = failed = 0
-        for row in rows:
+    if state == "admin_broadcast":
+        admin_target_states.pop(message.from_user.id, None)
+        users = [r["user_id"] for r in db.execute("SELECT user_id FROM users WHERE blocked=0").fetchall()]
+        sent = 0
+        for uid in users:
             try:
-                await bot.send_message(row["user_id"], text)
+                await message.bot.send_message(uid, message.text)
                 sent += 1
-            except Exception:
-                failed += 1
-        await message.answer(f"📢 Рассылка завершена.\n✅ Доставлено: {sent}\n❌ Не доставлено: {failed}", reply_markup=admin_keyboard())
+                await asyncio.sleep(0.04)
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+            except (TelegramForbiddenError, TelegramBadRequest):
+                pass
+        await message.answer(f"Рассылка завершена. Отправлено: {sent}")
         return
 
-    if state in {"ban", "unban", "clear_user"}:
-        row = find_user(text)
-        if row is None:
-            await message.answer("❌ Пользователь не найден.", reply_markup=cancel_keyboard())
+    if state == "admin_unblock":
+        query = message.text.strip()
+        if query.startswith("@"):
+            target = db.execute(
+                "SELECT * FROM users WHERE lower(username)=lower(?) AND blocked=1",
+                (query[1:],)
+            ).fetchone()
+        elif query.isdigit():
+            target = db.execute(
+                "SELECT * FROM users WHERE user_id=? AND blocked=1",
+                (int(query),)
+            ).fetchone()
+        else:
+            target = None
+
+        if not target:
+            await message.answer("Заблокированный пользователь не найден.")
             return
-        if state == "ban":
-            if row["user_id"] == OWNER_ID:
-                await message.answer("❌ Нельзя заблокировать владельца бота.", reply_markup=cancel_keyboard()); return
-            if row["banned"]:
-                await message.answer("🚫 Пользователь уже заблокирован.", reply_markup=cancel_keyboard()); return
-            db.execute("UPDATE users SET banned = 1 WHERE user_id = ?", (row["user_id"],)); db.commit()
-            admin_states.pop(OWNER_ID, None)
-            try: await bot.send_message(row["user_id"], "🚫 Ваша учётная запись была заблокирована в боте!\nПодать апелляцию - @emptinessdurka")
-            except Exception: pass
-            await message.answer(f"🚫 {username_text(row)} заблокирован.", reply_markup=admin_keyboard()); return
-        if state == "unban":
-            if not row["banned"]:
-                await message.answer("ℹ️ Пользователь не находится в чёрном списке.", reply_markup=cancel_keyboard()); return
-            db.execute("UPDATE users SET banned = 0 WHERE user_id = ?", (row["user_id"],)); db.commit()
-            admin_states.pop(OWNER_ID, None)
-            try: await bot.send_message(row["user_id"], "♻️ Ваша учётная запись снова доступна в боте!")
-            except Exception: pass
-            await message.answer(f"♻️ {username_text(row)} снова доступен.", reply_markup=admin_keyboard()); return
-        if row["user_id"] == OWNER_ID:
-            await message.answer("❌ Нельзя очистить профиль владельца этим действием.", reply_markup=cancel_keyboard()); return
-        db.execute("UPDATE users SET points = 0, last_claim = 0 WHERE user_id = ?", (row["user_id"],))
-        db.execute("DELETE FROM daily_points WHERE user_id = ?", (row["user_id"],))
-        db.execute("DELETE FROM weekly_points WHERE user_id = ?", (row["user_id"],))
-        db.commit()
-        admin_states.pop(OWNER_ID, None)
-        await message.answer(f"🧹 Данные игрока {username_text(row)} очищены.", reply_markup=admin_keyboard()); return
 
-    if state == "reset_points_first":
-        if text.upper() != "ДА":
-            await message.answer("❌ Напишите ДА для продолжения.", reply_markup=cancel_keyboard()); return
-        db.execute("UPDATE users SET points = 0, last_claim = 0")
-        db.execute("DELETE FROM daily_points")
-        db.execute("DELETE FROM weekly_points")
+        db.execute("UPDATE users SET blocked=0 WHERE user_id=?", (target["user_id"],))
         db.commit()
-        admin_states.pop(OWNER_ID, None)
-        await message.answer("💥 Очки и таймеры всех пользователей сброшены. Сами аккаунты сохранены.", reply_markup=admin_keyboard())
+        admin_target_states.pop(message.from_user.id, None)
+        try:
+            await message.bot.send_message(target["user_id"], "Вы были разблокированы в DeltaMine.")
+        except Exception:
+            pass
+        await message.answer("Пользователь разблокирован.", reply_markup=admin_keyboard())
         return
 
-    if state == "delete_all_first":
-        if text.upper() != "ДА":
-            await message.answer("❌ Напишите ДА для продолжения.", reply_markup=cancel_keyboard()); return
-        db.execute("DELETE FROM users")
-        db.execute("DELETE FROM daily_points")
-        db.execute("DELETE FROM weekly_points")
-        db.commit()
-        admin_states.pop(OWNER_ID, None)
-        await message.answer("🗑️ Все аккаунты пользователей удалены из базы.", reply_markup=admin_keyboard())
+    if isinstance(state, tuple):
+        action, target_id = state
 
+        if action == "vip_days":
+            if not message.text.isdigit():
+                await message.answer("Введите количество дней.")
+                return
+            value = int(message.text)
+            current_vip = db.execute(
+                "SELECT vip_until FROM users WHERE user_id=?", (target_id,)
+            ).fetchone()[0]
+            until = max(now_ts(), current_vip) + value * 86400
+            db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (until, target_id))
+            db.commit()
+            admin_target_states.pop(message.from_user.id, None)
+            await message.answer("VIP выдан.")
+            return
 
+        if action == "shards_amount":
+            if not message.text.isdigit():
+                await message.answer("Введите количество Осколков титула.")
+                return
+            value = int(message.text)
+            db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (value, target_id))
+            db.commit()
+            admin_target_states.pop(message.from_user.id, None)
+            await message.answer("Осколки выданы.")
+            return
 
+    if not message.text.isdigit():
+        await message.answer("Нужен Telegram ID.")
+        return
+
+    target_id = int(message.text)
+    target = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+    if not target:
+        await message.answer("Пользователь не найден.")
+        admin_target_states.pop(message.from_user.id, None)
+        return
+
+    if state == "admin_block":
+        if target_id == ADMIN_ID:
+            admin_target_states.pop(message.from_user.id, None)
+            await message.answer("Нельзя заблокировать администратора.")
+            return
+        admin_target_states[message.from_user.id] = ("block_confirm", target_id)
+        await message.answer(
+            "Точно заблокировать пользователя?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Да", callback_data=f"confirm_block:{target_id}")],
+                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+            ])
+        )
+        return
+
+    if state == "admin_clear":
+        admin_target_states[message.from_user.id] = ("clear_confirm", target_id)
+        await message.answer(
+            "Точно очистить пользователя?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Да", callback_data=f"confirm_clear:{target_id}")],
+                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+            ])
+        )
+        return
+
+    if state == "admin_vip":
+        admin_target_states[message.from_user.id] = ("vip_days", target_id)
+        await message.answer("Введите количество дней VIP.")
+        return
+
+    if state == "admin_shards":
+        admin_target_states[message.from_user.id] = ("shards_amount", target_id)
+        await message.answer("Введите количество Осколков титула.")
+        return
+
+@dp.callback_query(F.data.startswith("confirm_block:"))
+async def confirm_block(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    target_id = int(callback.data.split(":")[1])
+    if target_id == ADMIN_ID:
+        await callback.answer("Нельзя заблокировать администратора.", show_alert=True)
+        return
+    db.execute("UPDATE users SET blocked=1 WHERE user_id=?", (target_id,))
+    db.commit()
+    admin_target_states.pop(callback.from_user.id, None)
+    try:
+        await callback.bot.send_message(target_id, "Вы были заблокированы в DeltaMine.")
+    except Exception:
+        pass
+    await callback.answer("Пользователь заблокирован.")
+    await callback.message.edit_text("Пользователь заблокирован.", reply_markup=admin_keyboard())
+
+@dp.callback_query(F.data.startswith("confirm_clear:"))
+async def confirm_clear(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    target_id = int(callback.data.split(":")[1])
+    db.execute("""
+        UPDATE users SET balance=0, shards=0, ores_mined=0, daily_earned=0,
+        total_mines=0, pickaxe='обычная', title='', vip_until=0, last_mine=0, last_daily=''
+        WHERE user_id=?
+    """, (target_id,))
+    db.commit()
+    admin_states.pop(callback.from_user.id, None)
+    admin_target_states.pop(callback.from_user.id, None)
+    await callback.answer("Очищено.")
+    await callback.message.edit_text("Данные пользователя очищены.", reply_markup=admin_keyboard())
 
 async def main():
-    try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
-        db.close()
-
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    asyncio.create_task(daily_loop(bot))
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
