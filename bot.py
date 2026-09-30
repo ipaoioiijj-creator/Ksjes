@@ -154,29 +154,29 @@ def is_blocked(user_id):
 def menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Спуститься в шахту")],
-            [KeyboardButton(text="Профиль"), KeyboardButton(text="Лидеры")],
-            [KeyboardButton(text="апгрейд"), KeyboardButton(text="магазин")],
-            [KeyboardButton(text="Помощь")],
+            [KeyboardButton(text="⛏ Спуститься в шахту")],
+            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Лидеры")],
+            [KeyboardButton(text="⛏ Апгрейд"), KeyboardButton(text="🛒 Магазин")],
+            [KeyboardButton(text="❓ Помощь")],
         ],
         resize_keyboard=True
     )
 
 def mine_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Добыть руду", callback_data="mine")],
-        [InlineKeyboardButton(text="Назад", callback_data="mine_back")]
+        [InlineKeyboardButton(text="⛏ Добыть руду", callback_data="mine")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="mine_back")]
     ])
 
 def profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Другие профили", callback_data="profile_search")],
-        [InlineKeyboardButton(text="Изменить титульный значок", callback_data="change_title")]
+        [InlineKeyboardButton(text="👥 Другие профили", callback_data="profile_search")],
+        [InlineKeyboardButton(text="🏷 Изменить титульный значок", callback_data="change_title")]
     ])
 
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отмена", callback_data="profile_cancel")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="profile_cancel")]
     ])
 
 def upgrade_keyboard(current):
@@ -185,54 +185,54 @@ def upgrade_keyboard(current):
     if idx < len(PICKAXE_ORDER) - 1:
         nxt = PICKAXE_ORDER[idx + 1]
         rows.append([InlineKeyboardButton(
-            text=f"Улучшить до {nxt}",
+            text=f"⬆️ Улучшить до {nxt}",
             callback_data=f"upgrade:{nxt}"
         )])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data="upgrade_back")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="upgrade_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def upgrade_confirm_keyboard(target):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подтвердить", callback_data=f"upgrade_confirm:{target}")],
-        [InlineKeyboardButton(text="Назад", callback_data="upgrade_back")]
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"upgrade_confirm:{target}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="upgrade_back")]
     ])
 
 def shop_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ежедневка", callback_data="shop_daily")],
-        [InlineKeyboardButton(text="Титулы", callback_data="shop_titles")],
-        [InlineKeyboardButton(text="Донат", callback_data="shop_donate")]
+        [InlineKeyboardButton(text="🎁 Ежедневка", callback_data="shop_daily")],
+        [InlineKeyboardButton(text="🏷 Титулы", callback_data="shop_titles")],
+        [InlineKeyboardButton(text="💳 Донат", callback_data="shop_donate")]
     ])
 
 def donate_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Вип", callback_data="donate_vip")],
-        [InlineKeyboardButton(text="Осколки титула", callback_data="donate_shards")],
-        [InlineKeyboardButton(text="Назад", callback_data="shop_back")]
+        [InlineKeyboardButton(text="👑 VIP", callback_data="donate_vip")],
+        [InlineKeyboardButton(text="🔹 Осколки титула", callback_data="donate_shards")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
     ])
 
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Заблокировать пользователя", callback_data="admin_block")],
-        [InlineKeyboardButton(text="Черный список", callback_data="admin_blacklist")],
-        [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="Очистить пользователя", callback_data="admin_clear")],
-        [InlineKeyboardButton(text="Очистить всех", callback_data="admin_clear_all")],
-        [InlineKeyboardButton(text="Выдать VIP", callback_data="admin_vip")],
-        [InlineKeyboardButton(text="Выдать ОТ", callback_data="admin_shards")],
-        [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="🚫 Заблокировать пользователя", callback_data="admin_block")],
+        [InlineKeyboardButton(text="📋 Черный список", callback_data="admin_blacklist")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🗑 Очистить пользователя", callback_data="admin_clear")],
+        [InlineKeyboardButton(text="🗑 Очистить всех", callback_data="admin_clear_all")],
+        [InlineKeyboardButton(text="👑 Выдать VIP", callback_data="admin_vip")],
+        [InlineKeyboardButton(text="🔹 Выдать ОТ", callback_data="admin_shards")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
     ])
 
 def pickaxe_upgrade_text(row):
     idx = PICKAXE_ORDER.index(row["pickaxe"])
     if idx == len(PICKAXE_ORDER) - 1:
-        return "Апгрейд:\nУ вас максимальная кирка — титановая."
+        return "Апгрейд:\nУ вас максимальная кирка - титановая."
 
     nxt = PICKAXE_ORDER[idx + 1]
     cooldown = PICKAXES[nxt]["cooldown"] // 60
     extra = f"\nВремя ожидания: {cooldown} минуты." if nxt == "титановая" else ""
     return (
-        f"Текущая кирка: {row['pickaxe']}\n"
+        f"⛏ Текущая кирка: {row['pickaxe']}\n"
         f"Следующая кирка: {nxt}\n"
         f"Цена: {fmt_money(PICKAXES[nxt]['price'])}${extra}\n\n"
         "Подтвердить улучшение?"
@@ -251,27 +251,34 @@ def display_name(row):
 def profile_text(row):
     username = display_name(row)
     title = row["title"] or "нет"
-    vip = "активен" if row["vip_until"] > now_ts() else "неактивен"
+    
+    if row["vip_until"] > now_ts():
+        remaining = row["vip_until"] - now_ts()
+        days, rem = divmod(remaining, 86400)
+        hours = rem // 3600
+        vip = f"осталось {days} дн. {hours} ч."
+    else:
+        vip = "неактивен"
     place = get_place(row["user_id"], daily=False)
     daily_place = get_place(row["user_id"], daily=True)
     return (
         f"Никнейм: {username}\n"
-        f"Текущая кирка: {row['pickaxe']}\n"
-        f"Доллары: {fmt_money(row['balance'])}\n"
-        f"Осколки титула: {fmt_money(row['shards'])}\n"
+        f"⛏ Текущая кирка: {row['pickaxe']}\n"
+        f"💰 Доллары: {fmt_money(row['balance'])}\n"
+        f"🔹 Осколки титула: {fmt_money(row['shards'])}\n"
         f"Добыто руд: {row['ores_mined']}\n"
-        f"Место в топе: {place}\n"
-        f"Ежедневный топ: {daily_place}\n"
-        f"Вип-статус: {vip}\n"
-        f"Титульный значок: {title}\n"
-        f"Дата регистрации: {registration_date(row['created_at'])}"
+        f"🏆 Место в топе: {place}\n"
+        f"📅 Ежедневный топ: {daily_place}\n"
+        f"👑 Вип-статус: {vip}\n"
+        f"🏷 Титульный значок: {title}\n"
+        f"📅 Дата регистрации: {registration_date(row['created_at'])}"
     )
 
 def get_place(user_id, daily=False):
     field = "daily_earned" if daily else "balance"
     value = db.execute(f"SELECT {field} FROM users WHERE user_id=?", (user_id,)).fetchone()
     if not value:
-        return "—"
+        return "-"
     return db.execute(
         f"SELECT COUNT(*) + 1 FROM users WHERE {field} > ? AND blocked=0",
         (value[0],)
@@ -372,7 +379,7 @@ async def daily_rewards(bot):
     for place, uid, username, amount in winners:
         name = f"@{username}" if username else str(uid)
         db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (amount, uid))
-        lines.append(f"{place}. {name} — {amount} ОТ")
+        lines.append(f"{place}. {name} - {amount} ОТ")
     db.commit()
 
     all_users = [r["user_id"] for r in db.execute("SELECT user_id FROM users WHERE blocked=0").fetchall()]
@@ -410,7 +417,7 @@ async def start(message: Message):
         return
     await send_menu(message, welcome=True)
 
-@dp.message(F.text == "Спуститься в шахту")
+@dp.message(F.text.in_({"Спуститься в шахту", "⛏ Спуститься в шахту"}))
 async def mine_menu(message: Message):
     row = ensure_user(message.from_user)
     if row["blocked"]:
@@ -491,7 +498,7 @@ async def mine_back(callback: CallbackQuery):
     await callback.answer()
     await send_menu(callback.message, welcome=False)
 
-@dp.message(F.text == "Профиль")
+@dp.message(F.text.in_({"Профиль", "👤 Профиль"}))
 async def profile(message: Message):
     row = ensure_user(message.from_user)
     if row["blocked"]:
@@ -544,11 +551,11 @@ async def change_title(callback: CallbackQuery):
     buttons = []
     for title, price in TITLES.items():
         buttons.append([InlineKeyboardButton(
-            text=f"{title} — {fmt_money(price)} ОТ",
+            text=f"{title} - {fmt_money(price)} 🔹",
             callback_data=f"title:{title}"
         )])
-    buttons.append([InlineKeyboardButton(text="Снять значок", callback_data="title:remove")])
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="title_back")])
+    buttons.append([InlineKeyboardButton(text="❌ Снять значок", callback_data="title:remove")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="title_back")])
     await callback.answer()
     await callback.message.edit_text(
         f"Осколков титула: {fmt_money(row['shards'])}\nВыберите титульный значок:",
@@ -580,13 +587,17 @@ async def title_action(callback: CallbackQuery):
 @dp.callback_query(F.data == "title_back")
 async def title_back(callback: CallbackQuery):
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await profile_message(callback.bot, callback.message.chat.id, callback.from_user.id)
 
 async def check_user_message(message: Message):
     row = ensure_user(message.from_user)
     return None if row["blocked"] else row
 
-@dp.message(F.text == "Лидеры")
+@dp.message(F.text.in_({"Лидеры", "🏆 Лидеры"}))
 async def leaders_menu(message: Message):
     row = await check_user_message(message)
     if not row:
@@ -596,28 +607,28 @@ async def leaders_menu(message: Message):
     lines = ["Постоянный топ:"]
     if top:
         for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$")
+            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$")
     else:
         lines.append("Пока пусто.")
     lines.append("\nЕжедневный топ:")
     if daily:
         for i, r in enumerate(daily, 1):
-            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$")
+            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$")
     else:
         lines.append("Пока пусто.")
     lines.append("\nЕжедневный топ обновляется в 00:00 по МСК.")
     lines.append("По итогам дня топ-5 получают 1.000 Осколков титула:")
-    lines.append("1 место — 350 ОТ\n2 место — 250 ОТ\n3 место — 200 ОТ\n4 место — 150 ОТ\n5 место — 50 ОТ")
+    lines.append("1 место - 350 ОТ\n2 место - 250 ОТ\n3 место - 200 ОТ\n4 место - 150 ОТ\n5 место - 50 ОТ")
     await message.answer("\n".join(lines))
 
-@dp.message(F.text.in_({"апгрейд", "Апгрейд"}))
+@dp.message(F.text.in_({"апгрейд", "Апгрейд", "⛏ Апгрейд"}))
 async def upgrade_menu(message: Message):
     row = await check_user_message(message)
     if not row:
         return
     await show_upgrade(message.bot, message.chat.id, row)
 
-@dp.message(F.text.in_({"магазин", "Магазин"}))
+@dp.message(F.text.in_({"магазин", "Магазин", "🛒 Магазин"}))
 async def shop_menu(message: Message):
     row = await check_user_message(message)
     if not row:
@@ -638,7 +649,7 @@ async def upgrade_action(callback: CallbackQuery):
         await callback.answer("Недостаточно долларов.", show_alert=True)
         return
     text = (
-        f"Текущая кирка: {row['pickaxe']}\n"
+        f"⛏ Текущая кирка: {row['pickaxe']}\n"
         f"Новая кирка: {target}\n"
         f"Цена: {fmt_money(price)}$\n"
     )
@@ -669,6 +680,10 @@ async def upgrade_confirm(callback: CallbackQuery):
 @dp.callback_query(F.data == "upgrade_back")
 async def upgrade_back(callback: CallbackQuery):
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     await send_menu(callback.message, welcome=False)
 
 @dp.callback_query(F.data == "shop_daily")
@@ -690,42 +705,41 @@ async def shop_daily(callback: CallbackQuery):
     await callback.message.edit_text(
         f"Ежедневка:\n+{dollars}$\n+{shards} ОТ",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="shop_back")]
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
         ])
     )
 
 @dp.callback_query(F.data == "shop_titles")
 async def shop_titles(callback: CallbackQuery):
     buttons = [
-        [InlineKeyboardButton(text=f"{title} — {fmt_money(price)} ОТ", callback_data=f"shop_title:{title}")]
+        [InlineKeyboardButton(text=f"{title} - {fmt_money(price)} 🔹", callback_data=f"shop_title:{title}")]
         for title, price in TITLES.items()
     ]
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="shop_back")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")])
     await callback.answer()
-    await callback.message.edit_text("Титулы:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("🏷 Титулы:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data.startswith("shop_title:"))
 async def shop_title(callback: CallbackQuery):
     title = callback.data.split(":", 1)[1]
-    if title not in TITLES:
-        await callback.answer("Неизвестный титул.", show_alert=True)
-        return
     price = TITLES[title]
     await callback.answer()
     await callback.message.edit_text(
         f"{title}\nЦена: {fmt_money(price)} ОТ\n\nКупить?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Купить", callback_data=f"buy_title:{title}")],
-            [InlineKeyboardButton(text="Назад", callback_data="shop_titles")]
+            [InlineKeyboardButton(text="💰 Купить", callback_data=f"buy_title:{title}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_titles")]
         ])
     )
 
 @dp.callback_query(F.data.startswith("buy_title:"))
 async def buy_title(callback: CallbackQuery):
     title = callback.data.split(":", 1)[1]
-    if title not in TITLES:
-        await callback.answer("Неизвестный титул.", show_alert=True)
-        return
+    price = TITLES[title]
     row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
     if row["shards"] < price:
         await callback.answer("Недостаточно Осколков титула.", show_alert=True)
@@ -736,22 +750,30 @@ async def buy_title(callback: CallbackQuery):
     )
     db.commit()
     await callback.answer("Титул куплен.")
-    await callback.message.edit_text(f"Титул {title} установлен.")
+    await callback.message.edit_text(f"✅ Титул {title} куплен и установлен.\n\n🔹 Списано: {fmt_money(price)}")
 
 @dp.callback_query(F.data == "shop_back")
 async def shop_back(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("Магазин:", reply_markup=shop_keyboard())
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("🛒 Магазин:", reply_markup=shop_keyboard())
 
 @dp.callback_query(F.data == "shop_donate")
 async def shop_donate(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("Донат:", reply_markup=donate_keyboard())
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("💳 Донат:", reply_markup=donate_keyboard())
 
 @dp.callback_query(F.data == "donate_vip")
 async def donate_vip(callback: CallbackQuery):
     text = (
-        "VIP 35₽/мес:\n"
+        "👑 VIP 35₽/мес:\n"
         "Вип титул\n"
         "2x ежедневки\n"
         "250 ОТ сразу на баланс\n\n"
@@ -759,58 +781,61 @@ async def donate_vip(callback: CallbackQuery):
         "После оплаты получение товара может осуществляться в течение 24 часов! "
         "Товар возврату не подлежит!"
     )
-    await callback.answer()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="shop_donate")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_donate")]
     ])
-    if VIP_PHOTO:
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    if os.path.exists(VIP_PHOTO):
         try:
-            await callback.message.delete()
             await callback.message.answer_photo(FSInputFile(VIP_PHOTO), caption=text, reply_markup=keyboard)
             return
         except Exception:
             pass
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.message.answer(text, reply_markup=keyboard)
 
 @dp.callback_query(F.data == "donate_shards")
 async def donate_shards(callback: CallbackQuery):
     buttons = [
-        [InlineKeyboardButton(text="500 ОТ - 45₽", callback_data="pay:500")],
-        [InlineKeyboardButton(text="1.000 ОТ - 80₽", callback_data="pay:1000")],
-        [InlineKeyboardButton(text="5.000 ОТ - 300₽", callback_data="pay:5000")],
-        [InlineKeyboardButton(text="Назад", callback_data="shop_donate")]
+        [InlineKeyboardButton(text="🔹 500 ОТ - 45₽", callback_data="pay:500")],
+        [InlineKeyboardButton(text="🔹 1.000 ОТ - 80₽", callback_data="pay:1000")],
+        [InlineKeyboardButton(text="🔹 5.000 ОТ - 300₽", callback_data="pay:5000")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_donate")]
     ]
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.answer()
-    if SHARDS_PHOTO:
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    if os.path.exists(SHARDS_PHOTO):
         try:
-            await callback.message.delete()
-            await callback.message.answer_photo(FSInputFile(SHARDS_PHOTO), caption="Осколки титула:", reply_markup=markup)
+            await callback.message.answer_photo(FSInputFile(SHARDS_PHOTO), caption="🔹 Осколки титула:", reply_markup=markup)
             return
         except Exception:
             pass
-    await callback.message.edit_text("Осколки титула:", reply_markup=markup)
+    await callback.message.answer("🔹 Осколки титула:", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("pay:"))
 async def pay(callback: CallbackQuery):
-    amount = callback.data.split(":")[1]
-    labels = {
-        "500": "Обычный товар",
-        "1000": "Выгодный товар",
-        "5000": "Почти даром"
-    }
+    amount = callback.data.split(":", 1)[1]
+    labels = {"500": "Обычный товар", "1000": "Выгодный товар", "5000": "Почти даром"}
     await callback.answer()
-    await callback.message.edit_text(
-        f"{amount} ОТ:\n\n{labels[amount]}\n\n"
-        "Ссылка для оплаты -\n\n"
-        "После оплаты получение товара может осуществляться в течение 24 часов! "
-        "Товар возврату не подлежит!",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="donate_shards")]
-        ])
-    )
+    text = (f"🔹 {amount} ОТ:\n\n{labels[amount]}\n\n"
+            "Ссылка для оплаты -\n\n"
+            "После оплаты получение товара может осуществляться в течение 24 часов! "
+            "Товар возврату не подлежит!")
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="donate_shards")]])
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer(text, reply_markup=markup)
 
-@dp.message(F.text == "Помощь")
+@dp.message(F.text.in_({"Помощь", "❓ Помощь"}))
 async def help_button(message: Message):
     row = ensure_user(message.from_user)
     if not row["blocked"]:
@@ -819,12 +844,12 @@ async def help_button(message: Message):
 async def admin(message: Message):
     if not is_admin(message.from_user.id):
         return
-    await message.answer("Админка:", reply_markup=admin_keyboard())
+    await message.answer("🛠 Админка:", reply_markup=admin_keyboard())
 
 # Admin helpers
 admin_target_states = {}
 
-@dp.callback_query(F.data.in_({"admin_block", "admin_blacklist", "admin_stats", "admin_clear", "admin_clear_all", "admin_vip", "admin_shards", "admin_broadcast", "admin_unblock"}))
+@dp.callback_query(F.data.startswith("admin_"))
 async def admin_actions(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
@@ -869,40 +894,52 @@ async def admin_actions(callback: CallbackQuery):
     if action == "admin_blacklist":
         rows = db.execute("SELECT user_id, username FROM users WHERE blocked=1 ORDER BY user_id").fetchall()
         text = "Черный список:\n" + ("\n".join(
-            f"{r['user_id']} — @{r['username']}" if r["username"] else str(r["user_id"])
+            f"{r['user_id']} - @{r['username']}" if r["username"] else str(r["user_id"])
             for r in rows
         ) if rows else "Пусто")
         await callback.message.edit_text(
             text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Разблокировать", callback_data="admin_unblock")],
-                [InlineKeyboardButton(text="Назад", callback_data="admin_cancel")]
+                [InlineKeyboardButton(text="🔓 Разблокировать", callback_data="admin_unblock")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_cancel")]
             ])
         )
         return
 
     if action == "admin_unblock":
         admin_target_states[callback.from_user.id] = "admin_unblock"
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
         await callback.message.answer("Введите @username или Telegram ID для разблокировки.")
         return
 
     if action in {"admin_block", "admin_clear", "admin_vip", "admin_shards"}:
         admin_target_states[callback.from_user.id] = action
-        await callback.message.answer("Введите Telegram ID пользователя.")
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+        await callback.message.answer("Введите @username или Telegram ID пользователя.")
         return
 
     if action == "admin_clear_all":
         await callback.message.edit_text(
             "Точно очистить данные всех пользователей?",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Да, очистить", callback_data="admin_confirm_clear_all")],
-                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+                [InlineKeyboardButton(text="✅ Да, очистить", callback_data="admin_confirm_clear_all")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
             ])
         )
         return
 
     if action == "admin_broadcast":
         admin_target_states[callback.from_user.id] = "admin_broadcast"
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
         await callback.message.answer("Введите текст рассылки.")
         return
 
@@ -916,7 +953,11 @@ async def admin_confirm_clear_all(callback: CallbackQuery):
     """)
     db.commit()
     await callback.answer("Данные всех пользователей очищены.")
-    await callback.message.edit_text("Данные всех пользователей очищены.", reply_markup=admin_keyboard())
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("Данные всех пользователей очищены.", reply_markup=admin_keyboard())
 
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(callback: CallbackQuery):
@@ -925,7 +966,11 @@ async def admin_cancel(callback: CallbackQuery):
     admin_target_states.pop(callback.from_user.id, None)
     admin_states.pop(callback.from_user.id, None)
     await callback.answer()
-    await callback.message.edit_text("Админка:", reply_markup=admin_keyboard())
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.message.answer("🛠 Админка:", reply_markup=admin_keyboard())
 
 @dp.message(F.text, lambda message: message.from_user.id in admin_target_states)
 async def admin_input(message: Message):
@@ -1010,12 +1055,20 @@ async def admin_input(message: Message):
             await message.answer("Осколки выданы.")
             return
 
-    if not message.text.isdigit():
-        await message.answer("Нужен Telegram ID.")
+    query = message.text.strip()
+    if query.startswith("@"):
+        target = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (query[1:],)).fetchone()
+    elif query.isdigit():
+        target = db.execute("SELECT * FROM users WHERE user_id=?", (int(query),)).fetchone()
+    else:
+        target = None
+
+    if not target:
+        await message.answer("Пользователь не найден.")
+        admin_target_states.pop(message.from_user.id, None)
         return
 
-    target_id = int(message.text)
-    target = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+    target_id = target["user_id"]
     if not target:
         await message.answer("Пользователь не найден.")
         admin_target_states.pop(message.from_user.id, None)
@@ -1030,8 +1083,8 @@ async def admin_input(message: Message):
         await message.answer(
             "Точно заблокировать пользователя?",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Да", callback_data=f"confirm_block:{target_id}")],
-                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+                [InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_block:{target_id}")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
             ])
         )
         return
@@ -1041,8 +1094,8 @@ async def admin_input(message: Message):
         await message.answer(
             "Точно очистить пользователя?",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Да", callback_data=f"confirm_clear:{target_id}")],
-                [InlineKeyboardButton(text="Отмена", callback_data="admin_cancel")]
+                [InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_clear:{target_id}")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]
             ])
         )
         return
