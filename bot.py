@@ -26,6 +26,7 @@ MSK = ZoneInfo("Europe/Moscow")
 
 WELCOME_PHOTO = "welcome.jpg"
 VIP_PHOTO = "vip.jpg"
+SHARDS_PHOTO = "shards.jpg"
 PICKAXE_PHOTOS = {
     "обычная": "pickaxe_normal.jpg",
     "укреплённая": "pickaxe_reinforced.jpg",
@@ -184,11 +185,17 @@ def upgrade_keyboard(current):
     if idx < len(PICKAXE_ORDER) - 1:
         nxt = PICKAXE_ORDER[idx + 1]
         rows.append([InlineKeyboardButton(
-            text=f"Улучшить до {nxt} — {fmt_money(PICKAXES[nxt]['price'])}$",
+            text=f"Улучшить до {nxt}",
             callback_data=f"upgrade:{nxt}"
         )])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="upgrade_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def upgrade_confirm_keyboard(target):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить", callback_data=f"upgrade_confirm:{target}")],
+        [InlineKeyboardButton(text="Назад", callback_data="upgrade_back")]
+    ])
 
 def shop_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -615,21 +622,43 @@ async def upgrade(message: Message):
 async def upgrade_action(callback: CallbackQuery):
     target = callback.data.split(":", 1)[1]
     row = db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
-    if PICKAXE_ORDER.index(target) != PICKAXE_ORDER.index(row["pickaxe"]) + 1:
+    if not row or row["blocked"]:
+        return
+    if target not in PICKAXE_ORDER or PICKAXE_ORDER.index(target) != PICKAXE_ORDER.index(row["pickaxe"]) + 1:
         await callback.answer("Недоступное улучшение.", show_alert=True)
         return
     price = PICKAXES[target]["price"]
     if row["balance"] < price:
         await callback.answer("Недостаточно долларов.", show_alert=True)
         return
-    db.execute(
-        "UPDATE users SET balance=balance-?, pickaxe=? WHERE user_id=?",
-        (price, target, callback.from_user.id)
+    text = (
+        f"Текущая кирка: {row['pickaxe']}\n"
+        f"Новая кирка: {target}\n"
+        f"Цена: {fmt_money(price)}$\n"
     )
+    if target == "титановая":
+        text += "\nВремя ожидания после добычи: 3 минуты вместо 5.\n"
+    text += "\nПодтвердить улучшение?"
+    await callback.answer()
+    await callback.message.edit_text(text, reply_markup=upgrade_confirm_keyboard(target))
+
+@dp.callback_query(F.data.startswith("upgrade_confirm:"))
+async def upgrade_confirm(callback: CallbackQuery):
+    target = callback.data.split(":", 1)[1]
+    row = db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
+    if not row or row["blocked"]:
+        return
+    if target not in PICKAXE_ORDER or PICKAXE_ORDER.index(target) != PICKAXE_ORDER.index(row["pickaxe"]) + 1:
+        await callback.answer("Недоступное улучшение.", show_alert=True)
+        return
+    price = PICKAXES[target]["price"]
+    if row["balance"] < price:
+        await callback.answer("Недостаточно долларов.", show_alert=True)
+        return
+    db.execute("UPDATE users SET balance=balance-?, pickaxe=? WHERE user_id=?", (price, target, callback.from_user.id))
     db.commit()
     await callback.answer("Кирка улучшена.")
-    await show_upgrade(callback.bot, callback.message.chat.id,
-                       db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone())
+    await show_upgrade(callback.bot, callback.message.chat.id, db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone())
 
 @dp.callback_query(F.data == "upgrade_back")
 async def upgrade_back(callback: CallbackQuery):
@@ -747,8 +776,16 @@ async def donate_shards(callback: CallbackQuery):
         [InlineKeyboardButton(text="5.000 ОТ - 300₽", callback_data="pay:5000")],
         [InlineKeyboardButton(text="Назад", callback_data="shop_donate")]
     ]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.answer()
-    await callback.message.edit_text("Осколки титула:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    if SHARDS_PHOTO:
+        try:
+            await callback.message.delete()
+            await callback.message.answer_photo(FSInputFile(SHARDS_PHOTO), caption="Осколки титула:", reply_markup=markup)
+            return
+        except Exception:
+            pass
+    await callback.message.edit_text("Осколки титула:", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("pay:"))
 async def pay(callback: CallbackQuery):
