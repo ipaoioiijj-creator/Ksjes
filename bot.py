@@ -516,7 +516,7 @@ async def profile_cancel(callback: CallbackQuery):
     except TelegramBadRequest:
         pass
 
-@dp.message(F.text)
+@dp.message(F.text, lambda message: message.from_user.id in profile_search_users)
 async def profile_search_handler(message: Message):
     uid = message.from_user.id
     if uid not in profile_search_users:
@@ -671,13 +671,6 @@ async def upgrade_back(callback: CallbackQuery):
     await callback.answer()
     await send_menu(callback.message, welcome=False)
 
-@dp.message(F.text == "магазин")
-async def shop(message: Message):
-    row = ensure_user(message.from_user)
-    if row["blocked"]:
-        return
-    await message.answer("Магазин:", reply_markup=shop_keyboard())
-
 @dp.callback_query(F.data == "shop_daily")
 async def shop_daily(callback: CallbackQuery):
     row = db.execute("SELECT * FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
@@ -714,6 +707,9 @@ async def shop_titles(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("shop_title:"))
 async def shop_title(callback: CallbackQuery):
     title = callback.data.split(":", 1)[1]
+    if title not in TITLES:
+        await callback.answer("Неизвестный титул.", show_alert=True)
+        return
     price = TITLES[title]
     await callback.answer()
     await callback.message.edit_text(
@@ -727,7 +723,9 @@ async def shop_title(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("buy_title:"))
 async def buy_title(callback: CallbackQuery):
     title = callback.data.split(":", 1)[1]
-    price = TITLES[title]
+    if title not in TITLES:
+        await callback.answer("Неизвестный титул.", show_alert=True)
+        return
     row = db.execute("SELECT shards FROM users WHERE user_id=?", (callback.from_user.id,)).fetchone()
     if row["shards"] < price:
         await callback.answer("Недостаточно Осколков титула.", show_alert=True)
@@ -826,7 +824,7 @@ async def admin(message: Message):
 # Admin helpers
 admin_target_states = {}
 
-@dp.callback_query(F.data.startswith("admin_"))
+@dp.callback_query(F.data.in_({"admin_block", "admin_blacklist", "admin_stats", "admin_clear", "admin_clear_all", "admin_vip", "admin_shards", "admin_broadcast", "admin_unblock"}))
 async def admin_actions(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа.", show_alert=True)
@@ -929,7 +927,7 @@ async def admin_cancel(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("Админка:", reply_markup=admin_keyboard())
 
-@dp.message(F.text)
+@dp.message(F.text, lambda message: message.from_user.id in admin_target_states)
 async def admin_input(message: Message):
     if not is_admin(message.from_user.id):
         return
