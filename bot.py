@@ -77,10 +77,10 @@ MINE_CHANCES = {
     ],
     "алмазная": [
         ("Аметист", 40), ("Золото", 25), ("Алмаз", 15), ("Титан", 1),
-        ("Ничего", 9), ("Перерыв на хосте", 5), ("Уголёк", 5)
+        ("Ничего", 14), ("Уголёк", 5)
     ],
     "титановая": [
-        ("Алмаз", 40), ("Титан", 20), ("Перерыв на хосте", 20),
+        ("Алмаз", 40), ("Титан", 20), ("Ничего", 20),
         ("Темка не зашла", 10), ("Уголёк", 10)
     ],
 }
@@ -236,10 +236,10 @@ def shop_keyboard():
 
 def donate_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👑 VIP - 1 ⭐", callback_data="donate:vip")],
-        [InlineKeyboardButton(text="🔹 500 ОТ - 1 ⭐", callback_data="donate:shards_500")],
-        [InlineKeyboardButton(text="🔹 1.000 ОТ - 1 ⭐", callback_data="donate:shards_1000")],
-        [InlineKeyboardButton(text="🔹 5.000 ОТ - 1 ⭐", callback_data="donate:shards_5000")],
+        [InlineKeyboardButton(text="👑 VIP - 25 ⭐", callback_data="donate:vip")],
+        [InlineKeyboardButton(text="🔹 500 ОТ - 35 ⭐", callback_data="donate:shards_500")],
+        [InlineKeyboardButton(text="🔹 1.000 ОТ - 60 ⭐", callback_data="donate:shards_1000")],
+        [InlineKeyboardButton(text="🔹 5.000 ОТ - 250 ⭐", callback_data="donate:shards_5000")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_back")]
     ])
 
@@ -517,18 +517,18 @@ async def mine(callback: CallbackQuery):
         )
         update_stats(mines=1)
         extra = f"\nТемка не зашла. Минус 3% баланса: {fmt_money(loss)}$"
+    elif result == "Уголёк":
+        money = ORES["Уголь"]
+        extra = f"\nполучено: {fmt_money(money)}$\nВам попался уголёк."
+        db.execute("UPDATE users SET balance=balance+?, daily_earned=daily_earned+?, ores_mined=ores_mined+1, total_mines=total_mines+1, last_mine=? WHERE user_id=?", (money, money, current, callback.from_user.id))
+        update_stats(money=money, mines=1)
     else:
         db.execute(
             "UPDATE users SET total_mines=total_mines+1, last_mine=? WHERE user_id=?",
             (current, callback.from_user.id)
         )
         update_stats(mines=1)
-        if result == "Перерыв на хосте":
-            extra = "\nНа хосте перерыв."
-        elif result == "Уголёк":
-            extra = "\nВам попался уголёк."
-        else:
-            extra = "\nНичего не найдено."
+        extra = "\nНичего не найдено."
 
     db.commit()
     await callback.answer()
@@ -867,32 +867,32 @@ async def shop_donate(callback: CallbackQuery):
 DONATE_PRODUCTS = {
     "vip": {
         "title": "👑 VIP на месяц",
-        "description": "VIP на 30 дней. Включает VIP-статус, 2x ежедневку и 250 ОТ.",
+        "description": "Вип титул\n2x ежедневки\n250 ОТ сразу на баланс",
         "real_price": 25,
         "photo": VIP_PHOTO,
     },
     "shards_500": {
         "title": "🔹 500 ОТ",
-        "description": "500 Осколков титула.",
+        "description": "Обычный товар",
         "real_price": 35,
         "photo": SHARDS_PHOTO,
     },
     "shards_1000": {
         "title": "🔹 1.000 ОТ",
-        "description": "1.000 Осколков титула.",
+        "description": "Выгодный товар",
         "real_price": 60,
         "photo": SHARDS_PHOTO,
     },
     "shards_5000": {
         "title": "🔹 5.000 ОТ",
-        "description": "5.000 Осколков титула.",
+        "description": "Почти даром",
         "real_price": 250,
         "photo": SHARDS_PHOTO,
     },
 }
 
 def donate_price(product):
-    return TEST_STARS_PRICE
+    return DONATE_REAL_PRICES[product]
 
 @dp.callback_query(F.data.startswith("donate:"))
 async def donate_product(callback: CallbackQuery):
@@ -917,7 +917,7 @@ async def donate_product(callback: CallbackQuery):
         try:
             await callback.message.answer_photo(
                 FSInputFile(item["photo"]),
-                caption=f"{item['title']}\n\n{item['description']}\n\nТестовая цена: {price} ⭐"
+                caption=f"{item['title']}\n\n{item['description']}\n\nЦена: {price} ⭐"
             )
         except Exception:
             pass
@@ -941,7 +941,7 @@ async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
     if product not in DONATE_PRODUCTS:
         await pre_checkout_query.answer(ok=False, error_message="Товар не найден.")
         return
-    if pre_checkout_query.currency != "XTR" or pre_checkout_query.total_amount != TEST_STARS_PRICE:
+    if pre_checkout_query.currency != "XTR" or pre_checkout_query.total_amount != DONATE_REAL_PRICES.get(product, -1):
         await pre_checkout_query.answer(ok=False, error_message="Цена товара изменилась. Откройте оплату заново.")
         return
     await pre_checkout_query.answer(ok=True)
@@ -980,12 +980,63 @@ async def successful_payment(message: Message):
     db.commit()
     await message.answer(f"✅ Оплата прошла успешно!\n\n{result}")
 
+def help_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⛏ Основа", callback_data="help:base")],
+        [InlineKeyboardButton(text="🎲 Шансы", callback_data="help:chances")],
+        [InlineKeyboardButton(text="ℹ️ Другое", callback_data="help:other")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="help:back")]
+    ])
+
+HELP_BASE = (
+    "⛏ Основа\n\n"
+    "Добывай руду в шахте раз в 5 минут. С титановой киркой ожидание - 3 минуты.\n\n"
+    "Стоимость руды:\n"
+    "Камень - 1$\nУголь - 5$\nМедь - 10$\nЖелезо - 50$\n"
+    "Аметист - 100$\nЗолото - 250$\nАлмаз - 1.500$\nТитан - 6.000$\n\n"
+    "Кирки постепенно открывают более ценные руды. У каждой кирки свои шансы.\n\n"
+    "Негативные эффекты: Гномик вор забирает 5% баланса, Темка не зашла забирает 3%. Иногда выпадает Ничего. Уголёк - редкий случай, когда даже на кирке, где обычного шанса угля нет, можно получить уголь.\n\n"
+    "Есть постоянный и ежедневный топ. Ежедневный топ обновляется в 00:00 по МСК, а топ-5 получают Осколки титула. В магазине также есть ежедневка, титулы и донат."
+)
+
+HELP_CHANCES = (
+    "🎲 Шансы на добычу\n\n"
+    "⛏ Обычная:\nКамень 50% | Уголь 20% | Медь 15% | Железо 10% | Аметист 5%\n\n"
+    "🔨 Укреплённая:\nУголь 40% | Медь 25% | Железо 15% | Аметист 10% | Ничего 10%\n\n"
+    "🥇 Золотая:\nЖелезо 40% | Аметист 25% | Золото 15% | Алмаз 5% | Ничего 10% | Гномик вор 5%\n\n"
+    "💎 Алмазная:\nАметист 40% | Золото 25% | Алмаз 15% | Титан 1% | Ничего 14% | Уголёк 5%\n\n"
+    "🔷 Титановая:\nАлмаз 40% | Титан 20% | Ничего 20% | Темка не зашла 10% | Уголёк 10%"
+)
+
+HELP_OTHER = (
+    "ℹ️ Другое\n\n"
+    "Профиль показывает баланс, кирку, Осколки титула, добытую руду, позиции в топах, VIP и дату регистрации.\n\n"
+    "В магазине можно получать ежедневную награду, покупать титульные значки и приобретать донат за Telegram Stars.\n\n"
+    "Если что-то не сработало, не нажимай кнопку много раз подряд - сначала проверь результат предыдущего действия.\n\n"
+    "Осколки титула нужны для покупки значков, а доллары - для улучшения кирки."
+)
+
 @dp.message(F.text.in_({"Помощь", "❓ Помощь"}))
 async def help_button(message: Message):
     row = ensure_user(message.from_user)
     if not row["blocked"]:
         await hide_menu(message)
-        await message.answer("Помощь пока недоступна.")
+        await message.answer("Помощь:", reply_markup=help_keyboard())
+
+@dp.callback_query(F.data.startswith("help:"))
+async def help_section(callback: CallbackQuery):
+    action = callback.data.split(":", 1)[1]
+    await callback.answer()
+    if action == "back":
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+        await send_menu(callback.message, welcome=False)
+        return
+    texts = {"base": HELP_BASE, "chances": HELP_CHANCES, "other": HELP_OTHER}
+    if action in texts:
+        await callback.message.edit_text(texts[action], reply_markup=help_keyboard())
 @dp.message(F.text.in_({"/admin", "/админка"}))
 async def admin(message: Message):
     if not is_admin(message.from_user.id):
