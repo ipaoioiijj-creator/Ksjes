@@ -593,7 +593,7 @@ async def mine(callback: CallbackQuery):
         extra = f"\nТемка не зашла. Минус 3% баланса: {fmt_money(loss)}$"
     elif result == "Уголёк":
         money = ORES["Уголь"]
-        extra = f"\n{ore_name(result)}: +{fmt_money(money)}$\nВам попался {ore_name("Уголь")}."
+        extra = f"\n{ore_name(result)}: +{fmt_money(money)}$\nВам попался {ore_name('Уголь')}."
         db.execute("UPDATE users SET balance=balance+?, daily_earned=daily_earned+?, ores_mined=ores_mined+1, total_mines=total_mines+1, last_mine=? WHERE user_id=?", (money, money, current, callback.from_user.id))
         update_stats(money=money, mines=1)
     else:
