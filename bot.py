@@ -28,7 +28,6 @@ WELCOME_PHOTO = "welcome.jpg"
 VIP_PHOTO = "vip.jpg"
 SHARDS_PHOTO = "shards.jpg"
 
-# Цены для реального запуска. Пока тестируем все товары за 1 ⭐.
 DONATE_REAL_PRICES = {
     "vip": 25,
     "shards_500": 35,
@@ -181,7 +180,6 @@ def set_daily_rewards_enabled(enabled):
     db.execute("UPDATE bot_settings SET value=? WHERE key='daily_rewards_enabled'", ("1" if enabled else "0",))
     db.commit()
 
-# Переносим уже выбранные титулы в список купленных.
 for _row in db.execute("SELECT user_id, title FROM users WHERE title != ''").fetchall():
     db.execute("INSERT OR IGNORE INTO user_titles(user_id, title) VALUES(?, ?)", (_row['user_id'], _row['title']))
 db.commit()
@@ -199,7 +197,6 @@ def registration_date(timestamp):
     return datetime.fromtimestamp(timestamp, MSK).strftime("%d.%m.%Y %H:%M:%S")
 
 def mark_activity(user_id):
-    # Один игрок учитывается максимум один раз за сутки.
     db.execute(
         "INSERT OR IGNORE INTO activity_daily(date, user_id) VALUES(?, ?)",
         (today(), user_id)
@@ -364,7 +361,7 @@ def get_place(user_id, daily=False):
     field = "daily_earned" if daily else "balance"
     value = db.execute(f"SELECT {field} FROM users WHERE user_id=?", (user_id,)).fetchone()
     if not value:
-        return "—"
+        return "-"
     return db.execute(
         f"SELECT COUNT(*) + 1 FROM users WHERE {field} > ? AND blocked=0",
         (value[0],)
@@ -480,7 +477,7 @@ async def daily_rewards(bot):
         lines = ["🏆 Ежедневные лидеры", "", "🎁 Награды выданы:"]
         for place, uid, username, amount in winners:
             name = f"@{username}" if username else str(uid)
-            lines.append(f"{place}. {name} — +{amount} 🔹 ОТ")
+            lines.append(f"{place}. {name} - +{amount} 🔹 ОТ")
         message_text = "\n".join(lines)
     else:
         message_text = "🏆 Ежедневные лидеры\n\n📭 Сегодня победителей нет."
@@ -505,7 +502,6 @@ async def daily_loop(bot):
         await asyncio.sleep(max(1, (next_day - now).total_seconds()))
         await daily_rewards(bot)
 
-# Search state only lives in RAM; nothing extra is written to the database.
 profile_search_users = set()
 admin_states = {}
 admin_test_no_cooldown = False
@@ -746,22 +742,21 @@ async def leaders_menu(message: Message):
     lines = ["🏆 Постоянный топ:"]
     if top:
         for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$ 💰")
+            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$ 💰")
     else:
         lines.append("📭 Пока пусто.")
     lines.append("\n📅 Ежедневный топ:")
     if daily:
         for i, r in enumerate(daily, 1):
-            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$ 💰")
+            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$ 💰")
     else:
         lines.append("📭 Пока пусто.")
     lines.append("\n⏰ Ежедневный топ обновляется в 00:00 по МСК.")
+    lines.append("\n🎁 Награды выдаются только за ЕЖЕДНЕВНЫЙ ТОП-5:")
     if daily_rewards_enabled():
-        lines.append("🎁 Награды за топ-5 включены:")
-        lines.append("🥇 1 место — +350 🔹 ОТ\n🥈 2 место — +250 🔹 ОТ\n🥉 3 место — +200 🔹 ОТ\n4️⃣ 4 место — +150 🔹 ОТ\n5️⃣ 5 место — +50 🔹 ОТ")
+        lines.append("🥇 1 место - +350 🔹 ОТ\n🥈 2 место - +250 🔹 ОТ\n🥉 3 место - +200 🔹 ОТ\n4️⃣ 4 место - +150 🔹 ОТ\n5️⃣ 5 место - +50 🔹 ОТ")
     else:
-        lines.append("⛔ Награды за ежедневный топ сейчас отключены администратором.")
-        lines.append("📊 Сам ежедневный топ продолжает работать.")
+        lines.append("⛔ Награды за ежедневный топ отключены администратором.")
     await hide_menu(message)
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="leaders_back")]]))
 
@@ -1035,7 +1030,6 @@ async def successful_payment(message: Message):
     if not item or payment.currency != "XTR":
         return
 
-    # Не выдаём товар повторно, даже если Telegram повторно доставит update.
     try:
         db.execute(
             "INSERT INTO star_payments(telegram_payment_charge_id, user_id, product, amount, created_at) VALUES(?, ?, ?, ?, ?)",
@@ -1126,7 +1120,6 @@ async def admin(message: Message):
         return
     await message.answer("Админка:", reply_markup=admin_keyboard())
 
-# Admin helpers
 admin_target_states = {}
 
 @dp.callback_query(F.data.startswith("admin_"))
