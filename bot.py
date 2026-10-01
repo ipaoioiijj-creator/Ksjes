@@ -64,6 +64,21 @@ ORES = {
     "Титан": 6000,
 }
 
+ORE_ICONS = {
+    "Камень": "🪨",
+    "Уголь": "⚫",
+    "Медь": "🟠",
+    "Железо": "🔩",
+    "Аметист": "🟣",
+    "Золото": "🪙",
+    "Алмаз": "💎",
+    "Титан": "🔷",
+    "Уголёк": "⚫",
+}
+
+def ore_name(name):
+    return f"{ORE_ICONS.get(name, '⛏️')} {name}"
+
 MINE_CHANCES = {
     "обычная": [
         ("Камень", 50), ("Уголь", 20), ("Медь", 15), ("Железо", 10), ("Аметист", 5)
@@ -124,6 +139,14 @@ CREATE TABLE IF NOT EXISTS stats_daily (
     users INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS activity_daily (
+    date TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (date, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_daily_date ON activity_daily(date);
+
 CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);
 CREATE INDEX IF NOT EXISTS idx_users_daily ON users(daily_earned DESC);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -141,8 +164,22 @@ CREATE TABLE IF NOT EXISTS star_payments (
     amount INTEGER NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bot_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """)
+db.execute("INSERT OR IGNORE INTO bot_settings(key, value) VALUES('daily_rewards_enabled', '1')")
 db.commit()
+
+def daily_rewards_enabled():
+    row = db.execute("SELECT value FROM bot_settings WHERE key='daily_rewards_enabled'").fetchone()
+    return bool(row and row["value"] == "1")
+
+def set_daily_rewards_enabled(enabled):
+    db.execute("UPDATE bot_settings SET value=? WHERE key='daily_rewards_enabled'", ("1" if enabled else "0",))
+    db.commit()
 
 # Переносим уже выбранные титулы в список купленных.
 for _row in db.execute("SELECT user_id, title FROM users WHERE title != ''").fetchall():
@@ -161,6 +198,13 @@ def fmt_money(value):
 def registration_date(timestamp):
     return datetime.fromtimestamp(timestamp, MSK).strftime("%d.%m.%Y %H:%M:%S")
 
+def mark_activity(user_id):
+    # Один игрок учитывается максимум один раз за сутки.
+    db.execute(
+        "INSERT OR IGNORE INTO activity_daily(date, user_id) VALUES(?, ?)",
+        (today(), user_id)
+    )
+
 def ensure_user(user):
     ts = now_ts()
     username = user.username or ""
@@ -169,8 +213,11 @@ def ensure_user(user):
         VALUES (?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET username=excluded.username
     """, (user.id, username, ts))
+    row = db.execute("SELECT * FROM users WHERE user_id=?", (user.id,)).fetchone()
+    if not row["blocked"]:
+        mark_activity(user.id)
     db.commit()
-    return db.execute("SELECT * FROM users WHERE user_id=?", (user.id,)).fetchone()
+    return row
 
 def is_admin(user_id):
     return user_id == ADMIN_ID
@@ -254,6 +301,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="🔹 Выдать ОТ", callback_data="admin_shards")],
         [InlineKeyboardButton(text="💰 Выдать себе деньги", callback_data="admin_test_money")],
         [InlineKeyboardButton(text=f"⏱ Ожидание: {'ВЫКЛ' if admin_test_no_cooldown else 'ВКЛ'}", callback_data="admin_test_cooldown")],
+        [InlineKeyboardButton(text=f"🏆 Награды ежедневного топа: {'ВКЛ' if daily_rewards_enabled() else 'ВЫКЛ'}", callback_data="admin_daily_rewards")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
     ])
 
@@ -304,7 +352,7 @@ def profile_text(row):
         f"⛏ Текущая кирка: {row['pickaxe']}\n"
         f"💰 Доллары: {fmt_money(row['balance'])}\n"
         f"🔹 Осколки титула: {fmt_money(row['shards'])}\n"
-        f"Добыто руд: {row['ores_mined']}\n"
+        f"💎 Добыто руд: {row['ores_mined']}\n"
         f"🏆 Место в топе: {place}\n"
         f"📅 Ежедневный топ: {daily_place}\n"
         f"👑 Вип-статус: {vip}\n"
@@ -406,29 +454,38 @@ async def show_upgrade(bot, chat_id, row):
     await bot.send_message(chat_id, text, reply_markup=upgrade_keyboard(row["pickaxe"]))
 
 async def daily_rewards(bot):
+    enabled = daily_rewards_enabled()
     rows = get_top(True)
     rewards = {place: amount for amount, place in DAILY_REWARDS}
     winners = []
-    for place, row in enumerate(rows, 1):
-        amount = rewards.get(place, 0)
-        if amount:
-            user = db.execute("SELECT user_id FROM users WHERE username=?", (row["username"] or "",)).fetchone()
-            # Username is not unique/reliable, so resolve by ordered IDs instead below.
-            users = db.execute(
-                "SELECT user_id, username, daily_earned FROM users WHERE blocked=0 ORDER BY daily_earned DESC, user_id ASC LIMIT 5"
-            ).fetchall()
-            if place <= len(users):
-                winners.append((place, users[place - 1]["user_id"], users[place - 1]["username"], amount))
 
-    lines = ["Ежедневные лидеры:"]
-    for place, uid, username, amount in winners:
-        name = f"@{username}" if username else str(uid)
-        db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (amount, uid))
-        lines.append(f"{place}. {name} - {amount} ОТ")
-    db.commit()
+    if enabled:
+        for place, row in enumerate(rows, 1):
+            amount = rewards.get(place, 0)
+            if amount:
+                winners.append((place, row["user_id"], row["username"], amount))
+
+    if enabled:
+        for place, uid, username, amount in winners:
+            db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (amount, uid))
+        db.commit()
+
+    if not enabled:
+        message_text = (
+            "🏆 Ежедневные лидеры\n\n"
+            "⛔ Награды за ежедневный топ сейчас отключены администратором.\n"
+            "📊 Сам топ продолжает работать как обычно."
+        )
+    elif winners:
+        lines = ["🏆 Ежедневные лидеры", "", "🎁 Награды выданы:"]
+        for place, uid, username, amount in winners:
+            name = f"@{username}" if username else str(uid)
+            lines.append(f"{place}. {name} — +{amount} 🔹 ОТ")
+        message_text = "\n".join(lines)
+    else:
+        message_text = "🏆 Ежедневные лидеры\n\n📭 Сегодня победителей нет."
 
     all_users = [r["user_id"] for r in db.execute("SELECT user_id FROM users WHERE blocked=0").fetchall()]
-    message_text = "\n".join(lines) if winners else "Ежедневные лидеры:\nСегодня победителей нет."
     for uid in all_users:
         try:
             await bot.send_message(uid, message_text)
@@ -453,7 +510,23 @@ profile_search_users = set()
 admin_states = {}
 admin_test_no_cooldown = False
 
+from aiogram import BaseMiddleware
+
+class ActivityMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if user:
+            row = db.execute("SELECT blocked FROM users WHERE user_id=?", (user.id,)).fetchone()
+            if row is None:
+                ensure_user(user)
+            elif not row["blocked"]:
+                mark_activity(user.id)
+                db.commit()
+        return await handler(event, data)
+
 dp = Dispatcher()
+dp.message.outer_middleware(ActivityMiddleware())
+dp.callback_query.outer_middleware(ActivityMiddleware())
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -494,7 +567,7 @@ async def mine(callback: CallbackQuery):
 
     if result in ORES:
         money = ORES[result]
-        extra = f"\nполучено: {fmt_money(money)}$"
+        extra = f"\n{ore_name(result)}: +{fmt_money(money)}$"
         db.execute("""
             UPDATE users
             SET balance=balance+?, daily_earned=daily_earned+?, ores_mined=ores_mined+1,
@@ -520,7 +593,7 @@ async def mine(callback: CallbackQuery):
         extra = f"\nТемка не зашла. Минус 3% баланса: {fmt_money(loss)}$"
     elif result == "Уголёк":
         money = ORES["Уголь"]
-        extra = f"\nполучено: {fmt_money(money)}$\nВам попался уголёк."
+        extra = f"\n{ore_name(result)}: +{fmt_money(money)}$\nВам попался {ore_name("Уголь")}."
         db.execute("UPDATE users SET balance=balance+?, daily_earned=daily_earned+?, ores_mined=ores_mined+1, total_mines=total_mines+1, last_mine=? WHERE user_id=?", (money, money, current, callback.from_user.id))
         update_stats(money=money, mines=1)
     else:
@@ -534,7 +607,7 @@ async def mine(callback: CallbackQuery):
     db.commit()
     await callback.answer()
     try:
-        await callback.message.edit_text(f"Вы получили {result}!{extra}", reply_markup=mine_keyboard())
+        await callback.message.edit_text(f"Вы получили {ore_name(result) if result in ORES or result == 'Уголёк' else result}!{extra}", reply_markup=mine_keyboard())
     except TelegramBadRequest:
         pass
 
@@ -670,21 +743,25 @@ async def leaders_menu(message: Message):
         return
     top = get_top(False)
     daily = get_top(True)
-    lines = ["Постоянный топ:"]
+    lines = ["🏆 Постоянный топ:"]
     if top:
         for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$")
+            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$ 💰")
     else:
-        lines.append("Пока пусто.")
-    lines.append("\nЕжедневный топ:")
+        lines.append("📭 Пока пусто.")
+    lines.append("\n📅 Ежедневный топ:")
     if daily:
         for i, r in enumerate(daily, 1):
-            lines.append(f"{i}. {display_name(r)} - {fmt_money(r['value'])}$")
+            lines.append(f"{i}. {display_name(r)} — {fmt_money(r['value'])}$ 💰")
     else:
-        lines.append("Пока пусто.")
-    lines.append("\nЕжедневный топ обновляется в 00:00 по МСК.")
-    lines.append("По итогам дня топ-5 получают 1.000 Осколков титула:")
-    lines.append("1 место - 350 ОТ\n2 место - 250 ОТ\n3 место - 200 ОТ\n4 место - 150 ОТ\n5 место - 50 ОТ")
+        lines.append("📭 Пока пусто.")
+    lines.append("\n⏰ Ежедневный топ обновляется в 00:00 по МСК.")
+    if daily_rewards_enabled():
+        lines.append("🎁 Награды за топ-5 включены:")
+        lines.append("🥇 1 место — +350 🔹 ОТ\n🥈 2 место — +250 🔹 ОТ\n🥉 3 место — +200 🔹 ОТ\n4️⃣ 4 место — +150 🔹 ОТ\n5️⃣ 5 место — +50 🔹 ОТ")
+    else:
+        lines.append("⛔ Награды за ежедневный топ сейчас отключены администратором.")
+        lines.append("📊 Сам ежедневный топ продолжает работать.")
     await hide_menu(message)
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="leaders_back")]]))
 
@@ -993,8 +1070,8 @@ HELP_BASE = (
     "⛏ Основа\n\n"
     "Добывай руду в шахте раз в 5 минут. С титановой киркой ожидание - 3 минуты.\n\n"
     "Стоимость руды:\n"
-    "Камень - 1$\nУголь - 5$\nМедь - 10$\nЖелезо - 50$\n"
-    "Аметист - 100$\nЗолото - 250$\nАлмаз - 1.500$\nТитан - 6.000$\n\n"
+    f"{ore_name('Камень')} - 1$\n{ore_name('Уголь')} - 5$\n{ore_name('Медь')} - 10$\n{ore_name('Железо')} - 50$\n"
+    f"{ore_name('Аметист')} - 100$\n{ore_name('Золото')} - 250$\n{ore_name('Алмаз')} - 1.500$\n{ore_name('Титан')} - 6.000$\n\n"
     "Кирки постепенно открывают более ценные руды. У каждой кирки свои шансы.\n\n"
     "Негативные эффекты: Гномик вор забирает 5% баланса, Темка не зашла забирает 3%. Иногда выпадает Ничего. Уголёк - редкий случай, когда даже на кирке, где обычного шанса угля нет, можно получить уголь.\n\n"
     "Есть постоянный и ежедневный топ. Ежедневный топ обновляется в 00:00 по МСК, а топ-5 получают Осколки титула. В магазине также есть ежедневка, титулы и донат."
@@ -1014,7 +1091,12 @@ HELP_OTHER = (
     "Профиль показывает баланс, кирку, Осколки титула, добытую руду, позиции в топах, VIP и дату регистрации.\n\n"
     "В магазине можно получать ежедневную награду, покупать титульные значки и приобретать донат за Telegram Stars.\n\n"
     "Если что-то не сработало, не нажимай кнопку много раз подряд - сначала проверь результат предыдущего действия.\n\n"
-    "Осколки титула нужны для покупки значков, а доллары - для улучшения кирки."
+    "Осколки титула нужны для покупки значков, а доллары - для улучшения кирки.\n\n"
+    "👑 VIP-игрок: у его никнейма отображается значок 👑. VIP даёт бонус к ежедневной награде.\n"
+    "😎 Администратор: у его никнейма отображается значок 😎. Админский статус доступен только владельцу админки.\n"
+    "🏷 Титул игрока: выбранный игроком титульный значок отображается рядом с его никнеймом.\n"
+    "🚫 Заблокированный игрок: после блокировки у его никнейма отображается 🚫, а пользоваться ботом он не может.\n"
+    "Если у игрока одновременно есть несколько статусов, специальные значки отображаются вместе с его никнеймом."
 )
 
 @dp.message(F.text.in_({"Помощь", "❓ Помощь"}))
@@ -1069,35 +1151,61 @@ async def admin_actions(callback: CallbackQuery):
         await callback.answer(f"Ожидание: {status}")
         return
 
+    if action == "admin_daily_rewards":
+        enabled = not daily_rewards_enabled()
+        set_daily_rewards_enabled(enabled)
+        status = "ВКЛ" if enabled else "ВЫКЛ"
+        await callback.message.edit_text(
+            f"🏆 Награды ежедневного топа: {status}",
+            reply_markup=admin_keyboard()
+        )
+        await callback.answer(f"Награды: {status}")
+        return
+
     if action == "admin_stats":
         total = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         money = db.execute("SELECT COALESCE(SUM(balance),0) FROM users").fetchone()[0]
         mines = db.execute("SELECT COALESCE(SUM(total_mines),0) FROM users").fetchone()[0]
-        now = datetime.now(MSK)
-        week = (now.date() - timedelta(days=6)).isoformat()
-        month = now.date().replace(day=1).isoformat()
-        day = today()
-        def stat(d1, d2=None):
-            if d2:
-                r = db.execute(
-                    "SELECT COALESCE(SUM(money_earned),0), COALESCE(SUM(mines),0) FROM stats_daily WHERE date BETWEEN ? AND ?",
-                    (d1, d2)
-                ).fetchone()
-            else:
-                r = db.execute(
-                    "SELECT COALESCE(SUM(money_earned),0), COALESCE(SUM(mines),0) FROM stats_daily WHERE date=?",
-                    (d1,)
-                ).fetchone()
-            return r[0], r[1]
-        day_m, day_n = stat(day)
-        week_m, week_n = stat(week, day)
-        month_m, month_n = stat(month, day)
+        now = datetime.now(MSK).date()
+        day = now.isoformat()
+        week_start = now - timedelta(days=6)
+        month_start = now - timedelta(days=29)
+
+        def active_count(date_value):
+            return db.execute(
+                """SELECT COUNT(*) FROM activity_daily a
+                   JOIN users u ON u.user_id=a.user_id
+                   WHERE a.date=? AND u.blocked=0""",
+                (date_value.isoformat() if hasattr(date_value, "isoformat") else date_value,)
+            ).fetchone()[0]
+
+        def activity_lines(start_date, end_date):
+            rows = db.execute(
+                """SELECT a.date, COUNT(*) AS cnt
+                   FROM activity_daily a
+                   JOIN users u ON u.user_id=a.user_id
+                   WHERE a.date BETWEEN ? AND ? AND u.blocked=0
+                   GROUP BY a.date""",
+                (start_date.isoformat(), end_date.isoformat())
+            ).fetchall()
+            counts = {r["date"]: r["cnt"] for r in rows}
+            lines = []
+            current = start_date
+            while current <= end_date:
+                lines.append(f"{current.strftime('%d.%m')}: {counts.get(current.isoformat(), 0)}")
+                current += timedelta(days=1)
+            return " | ".join(lines)
+
+        today_active = active_count(now)
+        week_active = activity_lines(week_start, now)
+        month_active = activity_lines(month_start, now)
+
         await callback.message.edit_text(
             f"Статистика:\n\n"
             f"За всё время:\nПользователей: {total}\nБаланс всех: {fmt_money(money)}$\nКопаний: {mines}\n\n"
-            f"За день:\nЗаработано: {fmt_money(day_m)}$\nКопаний: {day_n}\n\n"
-            f"За неделю:\nЗаработано: {fmt_money(week_m)}$\nКопаний: {week_n}\n\n"
-            f"За месяц:\nЗаработано: {fmt_money(month_m)}$\nКопаний: {month_n}",
+            f"Активность сегодня: {today_active} игроков\n\n"
+            f"Активность за последние 7 дней (игроков в день):\n{week_active}\n\n"
+            f"Активность за последние 30 дней (игроков в день):\n{month_active}",
             reply_markup=admin_keyboard()
         )
         return
@@ -1128,6 +1236,8 @@ async def admin_actions(callback: CallbackQuery):
         return
 
     if action == "admin_clear_all":
+        admin_target_states.pop(callback.from_user.id, None)
+        admin_states.pop(callback.from_user.id, None)
         await callback.message.edit_text(
             "Точно очистить данные всех пользователей?",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1151,6 +1261,8 @@ async def admin_confirm_clear_all(callback: CallbackQuery):
         total_mines=0, pickaxe='обычная', title='', vip_until=0, last_mine=0, last_daily=''
     """)
     db.execute("DELETE FROM user_titles")
+    db.execute("DELETE FROM activity_daily")
+    db.execute("DELETE FROM stats_daily")
     db.commit()
     await callback.answer("Данные всех пользователей очищены.")
     await callback.message.edit_text("Данные всех пользователей очищены.", reply_markup=admin_keyboard())
@@ -1176,10 +1288,8 @@ async def admin_input(message: Message):
     if state == "admin_test_money":
         try:
             amount = int(message.text.strip())
-            if amount < 0:
-                raise ValueError
         except ValueError:
-            await message.answer("Введите целое число больше или равно 0.")
+            await message.answer("Введите целое число, например 500 или -900.")
             return
         db.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, ADMIN_ID))
         db.commit()
@@ -1236,37 +1346,70 @@ async def admin_input(message: Message):
         action, target_id = state
 
         if action == "vip_days":
-            if not message.text.isdigit():
-                await message.answer("Введите количество дней.")
+            try:
+                value = int(message.text.strip())
+            except ValueError:
+                await message.answer("Введите целое количество дней, например 30 или -5.")
                 return
-            value = int(message.text)
+
             current_vip = db.execute(
                 "SELECT vip_until FROM users WHERE user_id=?", (target_id,)
             ).fetchone()[0]
-            until = max(now_ts(), current_vip) + value * 86400
-            db.execute("UPDATE users SET vip_until=? WHERE user_id=?", (until, target_id))
+            now = now_ts()
+            current_remaining = max(0, current_vip - now)
+            new_remaining = max(0, current_remaining + value * 86400)
+            until = now + new_remaining if new_remaining else 0
+
+            bonus_shards = 250 if value > 0 and current_remaining == 0 else 0
+            db.execute(
+                "UPDATE users SET vip_until=?, shards=shards+? WHERE user_id=?",
+                (until, bonus_shards, target_id)
+            )
             db.commit()
             admin_target_states.pop(message.from_user.id, None)
-            remaining_days = max(0, (until - now_ts() + 86399) // 86400)
-            await message.answer(f"👑 VIP выдан на +{value} дн.\nУ пользователя теперь примерно {remaining_days} дн. VIP.", reply_markup=admin_keyboard())
+            remaining_days = new_remaining // 86400
+            total_shards = db.execute("SELECT shards FROM users WHERE user_id=?", (target_id,)).fetchone()[0]
+
+            if value > 0:
+                action_text = f"+{value} дн."
+            elif value < 0:
+                action_text = f"{value} дн."
+            else:
+                action_text = "0 дн."
+            bonus_text = f"\n🎁 Бонус: +250 ОТ, так как VIP не было." if bonus_shards else ""
+
+            await message.answer(
+                f"👑 VIP: {action_text}\nУ пользователя осталось: {remaining_days} дн. VIP.{bonus_text}",
+                reply_markup=admin_keyboard()
+            )
             try:
-                await message.bot.send_message(target_id, f"👑 Вам выдан VIP на +{value} дн.\nVIP продлён и теперь действует ещё примерно {remaining_days} дн.")
+                if value > 0:
+                    user_text = f"👑 Вам выдали VIP на {value} дн.\nТеперь VIP действует ещё {remaining_days} дн."
+                elif value < 0:
+                    user_text = f"👑 Срок VIP изменён на {value} дн.\nТеперь VIP действует ещё {remaining_days} дн."
+                else:
+                    user_text = f"👑 Срок VIP не изменён. Сейчас осталось {remaining_days} дн."
+                if bonus_shards:
+                    user_text += "\n🎁 За выдачу VIP с нулевого срока вам начислено +250 ОТ."
+                await message.bot.send_message(target_id, user_text)
             except Exception:
                 pass
             return
 
         if action == "shards_amount":
-            if not message.text.isdigit():
-                await message.answer("Введите количество Осколков титула.")
+            try:
+                value = int(message.text.strip())
+            except ValueError:
+                await message.answer("Введите целое количество Осколков титула, например 500 или -900.")
                 return
-            value = int(message.text)
             db.execute("UPDATE users SET shards=shards+? WHERE user_id=?", (value, target_id))
             db.commit()
             admin_target_states.pop(message.from_user.id, None)
             total_shards = db.execute("SELECT shards FROM users WHERE user_id=?", (target_id,)).fetchone()[0]
-            await message.answer(f"🔹 Выдано Осколков титула: +{value}\nТеперь на балансе: {total_shards} ОТ", reply_markup=admin_keyboard())
+            sign = "+" if value > 0 else ""
+            await message.answer(f"🔹 Осколки титула: {sign}{value}\nТеперь на балансе: {total_shards} ОТ", reply_markup=admin_keyboard())
             try:
-                await message.bot.send_message(target_id, f"🔹 Вам выдано Осколков титула: +{value}\nТеперь на балансе: {total_shards} ОТ")
+                await message.bot.send_message(target_id, f"🔹 Изменение ОТ: {sign}{value}\nТеперь на балансе: {total_shards} ОТ")
             except Exception:
                 pass
             return
@@ -1355,6 +1498,7 @@ async def confirm_clear(callback: CallbackQuery):
         WHERE user_id=?
     """, (target_id,))
     db.execute("DELETE FROM user_titles WHERE user_id=?", (target_id,))
+    db.execute("DELETE FROM activity_daily WHERE user_id=?", (target_id,))
     db.commit()
     admin_states.pop(callback.from_user.id, None)
     admin_target_states.pop(callback.from_user.id, None)
