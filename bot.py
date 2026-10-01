@@ -368,9 +368,8 @@ def get_place(user_id, daily=False):
     ).fetchone()[0]
 
 def get_top(daily=False):
-    field = "daily_earned" if daily else "balance"
     return db.execute(
-        f"SELECT user_id, username, {field} AS value, title, vip_until, blocked FROM users WHERE blocked=0 ORDER BY {field} DESC, user_id ASC LIMIT 5"
+        "SELECT user_id, username, balance AS value, title, vip_until, blocked FROM users WHERE blocked=0 ORDER BY balance DESC, user_id ASC LIMIT 5"
     ).fetchall()
 
 def weighted_result(pickaxe):
